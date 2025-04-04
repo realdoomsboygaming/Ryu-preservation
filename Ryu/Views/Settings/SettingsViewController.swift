@@ -1,10 +1,3 @@
-//
-//  SettingsViewController.swift
-//  Ryu
-//
-//  Created by Francesco on 22/06/24.
-//
-
 import UIKit
 import UniformTypeIdentifiers // Keep for UIDocumentPickerDelegate if used here directly (it's used in the extension)
 
