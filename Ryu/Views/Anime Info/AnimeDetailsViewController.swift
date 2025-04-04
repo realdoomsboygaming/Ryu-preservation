@@ -1,10 +1,3 @@
-//
-//  AnimeDetailsViewController.swift
-//  Ryu
-//
-//  Created by Francesco on 22/06/24.
-//
-
 import UIKit
 import AVKit
 import SwiftSoup
@@ -36,6 +29,13 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     
     var availableQualities: [String] = []
     var qualityOptions: [(name: String, fileName: String)] = []
+    
+    // Multi-select properties
+    private var isSelectMode = false
+    private var selectedEpisodes = Set<Episode>()
+    private var downloadButton: UIBarButtonItem!
+    private var selectButton: UIBarButtonItem!
+    private var cancelButton: UIBarButtonItem!
     
     func configure(title: String, imageUrl: String, href: String, source: String) {
         self.animeTitle = title
@@ -111,6 +111,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         checkFavoriteStatus()
         setupAudioSession()
         setupCastButton()
+        setupMultiSelectUI()
         
         isReverseSorted = UserDefaults.standard.bool(forKey: "isEpisodeReverseSorted")
         sortEpisodes()
@@ -145,6 +146,100 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     private func setupCastButton() {
         let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: castButton)
+    }
+    
+    func setupMultiSelectUI() {
+        // Create bar button items
+        selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
+        downloadButton = UIBarButtonItem(title: "Download", style: .plain, target: self, action: #selector(downloadSelectedEpisodes))
+        cancelButton = UIBarButtonItem(title: "Cancel", style: .plain, target: self, action: #selector(toggleSelectMode))
+        
+        // Set initial right bar button items
+        navigationItem.rightBarButtonItems = [selectButton]
+        
+        // Set downloadButton initially disabled
+        downloadButton.isEnabled = false
+    }
+    
+    @objc private func toggleSelectMode() {
+        isSelectMode = !isSelectMode
+        selectedEpisodes.removeAll()
+        
+        if isSelectMode {
+            navigationItem.rightBarButtonItems = [cancelButton, downloadButton]
+            downloadButton.isEnabled = false
+        } else {
+            navigationItem.rightBarButtonItems = [selectButton]
+        }
+        
+        // Reload episodes section to update UI
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+    
+    @objc private func downloadSelectedEpisodes() {
+        guard !selectedEpisodes.isEmpty else { return }
+        
+        showAlert(
+            title: "Download Multiple Episodes",
+            message: "Do you want to download \(selectedEpisodes.count) selected episodes?",
+            actions: [
+                UIAlertAction(title: "Cancel", style: .cancel, handler: nil),
+                UIAlertAction(title: "Download", style: .default) { [weak self] _ in
+                    self?.startBatchDownload()
+                }
+            ]
+        )
+    }
+    
+    private func startBatchDownload() {
+        // Convert set to array for ordered processing
+        let episodesToDownload = Array(selectedEpisodes).sorted { $0.episodeNumber < $1.episodeNumber }
+        processNextDownload(episodes: episodesToDownload)
+        
+        // Exit select mode
+        toggleSelectMode()
+    }
+    
+    private func processNextDownload(episodes: [Episode], index: Int = 0) {
+        guard index < episodes.count else { 
+            showAlert(title: "Downloads Complete", message: "All episodes have been queued for download.")
+            return
+        }
+        
+        let episode = episodes[index]
+        
+        // We need to fetch the source URL for this episode
+        UserDefaults.standard.set(true, forKey: "isToDownload")
+        
+        // Show loader for first download only
+        if index == 0 {
+            showLoadingBanner()
+        }
+        
+        // Create a dummy cell for the episode
+        let dummyCell = EpisodeCell()
+        dummyCell.episodeNumber = episode.number
+        
+        let fullURL = episode.href
+        
+        // Process this episode
+        episodeSelected(episode: episode, cell: dummyCell)
+        
+        // After a delay to allow the current download to be queued
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.processNextDownload(episodes: episodes, index: index + 1)
+        }
+    }
+    
+    // Helper method for showing alerts with multiple actions
+    private func showAlert(title: String, message: String, actions: [UIAlertAction]) {
+        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        
+        for action in actions {
+            alertController.addAction(action)
+        }
+        
+        present(alertController, animated: true, completion: nil)
     }
     
     deinit {
@@ -350,9 +445,41 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
             let episode = episodes[indexPath.row]
             cell.configure(episode: episode, delegate: self)
             cell.loadSavedProgress(for: episode.href)
+            
+            // Configure selection state for episode cells
+            cell.setSelectionMode(isSelectMode, isSelected: selectedEpisodes.contains(episode))
+            
             return cell
         default:
             return UITableViewCell()
+        }
+    }
+    
+    // Override tableView didSelectRowAt to handle selection in multi-select mode
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        if indexPath.section == 2 {
+            let episode = episodes[indexPath.row]
+            
+            if isSelectMode {
+                if selectedEpisodes.contains(episode) {
+                    selectedEpisodes.remove(episode)
+                } else {
+                    selectedEpisodes.insert(episode)
+                }
+                
+                // Update download button state
+                downloadButton.isEnabled = !selectedEpisodes.isEmpty
+                
+                // Reload just this cell to update selection state
+                tableView.reloadRows(at: [indexPath], with: .automatic)
+            } else {
+                // Normal episode selection handling
+                if let cell = tableView.cellForRow(at: indexPath) as? EpisodeCell {
+                    episodeSelected(episode: episode, cell: cell)
+                }
+            }
         }
     }
     
@@ -694,16 +821,6 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         present(alertController, animated: true, completion: nil)
     }
     
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        if indexPath.section == 2 {
-            let episode = episodes[indexPath.row]
-            if let cell = tableView.cellForRow(at: indexPath) as? EpisodeCell {
-                episodeSelected(episode: episode, cell: cell)
-            }
-        }
-    }
-    
     func episodeSelected(episode: Episode, cell: EpisodeCell) {
         showLoadingBanner()
         
@@ -999,7 +1116,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
                 case "AnimeSRBIJA":
                     srcURL = self.extractAsgoldURL(from: htmlString)
                 case "Anime3rb":
-                    self.anime3rbGetter  (from: htmlString) { finalUrl in
+                    self.anime3rbGetter(from: htmlString) { finalUrl in
                         if let url = finalUrl {
                             self.hideLoadingBanner()
                             self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL)
