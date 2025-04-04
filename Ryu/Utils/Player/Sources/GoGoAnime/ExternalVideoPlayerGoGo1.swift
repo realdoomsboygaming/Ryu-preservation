@@ -331,7 +331,7 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
                 switch result {
                 case .success(let downloadURL):
                     print("Download completed. File saved at: \(downloadURL)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
+                    self?.animeDetailsViewController?.showAlert(title: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
                 case .failure(let error):
                     print("Download failed with error: \(error.localizedDescription)")
                     self?.animeDetailsViewController?.showAlert(withTitle: "Download Failed", message: error.localizedDescription)
