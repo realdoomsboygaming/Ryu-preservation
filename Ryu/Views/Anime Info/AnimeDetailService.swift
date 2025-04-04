@@ -27,16 +27,16 @@ class AnimeDetailService {
             .anilist: "https://aniwatch-api-gp1w.onrender.com/anime/info?id=", // API endpoint
             .anilibria: "https://api.anilibria.tv/v3/title?id=", // API endpoint
             .animefire: "https://animefire.plus/",
-            .kuramanime: "https://kuramanime.red/quick/ongoing?order_by=updated", // Search/list page might be better?
-            .anime3rb: "https://anime3rb.com/titles/list?status[0]=upcomming&status[1]=finished&sort_by=addition_date", // Search/list page
-            .animesrbija: "https://www.animesrbija.com/filter?sort=new", // Search/list page
-            .aniworld: "https://aniworld.to/neu", // List page
-            .tokyoinsider: "https://www.tokyoinsider.com/new", // List page
-            .anivibe: "https://anivibe.net/newest", // List page
-            .animeunity: "https://www.animeunity.to/", // Base URL
-            .animeflv: "https://www3.animeflv.net/", // Base URL
-            .animebalkan: "https://animebalkan.org/animesaprevodom/?status=&type=&order=update", // Search/list page
-            .anibunker: "https://www.anibunker.com/animes" // List page
+            .kuramanime: "https://kuramanime.red", // Use base URL, search/list page might be needed for initial discovery
+            .anime3rb: "https://anime3rb.com", // Use base URL
+            .animesrbija: "https://www.animesrbija.com", // Use base URL
+            .aniworld: "https://aniworld.to", // Use base URL
+            .tokyoinsider: "https://www.tokyoinsider.com", // Use base URL
+            .anivibe: "https://anivibe.net", // Use base URL
+            .animeunity: "https://www.animeunity.to", // Use base URL
+            .animeflv: "https://www3.animeflv.net", // Use base URL
+            .animebalkan: "https://animebalkan.org", // Use base URL
+            .anibunker: "https://www.anibunker.com" // Use base URL
         ]
 
         let baseUrl = baseUrls[selectedSource] ?? "" // Default to empty if not mapped
@@ -50,49 +50,58 @@ class AnimeDetailService {
                 let components = href.components(separatedBy: "/")
                 if let tsIndex = components.firstIndex(of: "ts"),
                    tsIndex + 1 < components.count,
-                   let extractedId = components[tsIndex + 1].components(separatedBy: CharacterSet.decimalDigits.inverted).first {
-                    fullUrlString = baseUrl + extractedId
+                   // Extract only digits for the ID
+                   let extractedId = components[tsIndex + 1].components(separatedBy: CharacterSet.decimalDigits.inverted).joined() {
+                   if !extractedId.isEmpty {
+                        fullUrlString = baseUrl + extractedId
+                    } else {
+                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract Anilibria ID (empty after filtering)."])))
+                        return
+                    }
                 } else {
-                    // Fallback or error if ID extraction fails
                     completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract Anilibria ID."])))
                     return
                 }
             } else if let _ = Int(href) { // If href is already just the ID
                 fullUrlString = baseUrl + href
             } else {
-                // Assume href is a full URL to the release page, need to adapt fetching if needed
-                // Or signal an error if only ID-based fetching is supported
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unsupported Anilibria URL format."])))
+                // If href is a full URL to the release page, we might need to fetch it first to get the ID
+                // For now, assuming only ID-based fetching is supported for details API
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unsupported Anilibria URL format for details API."])))
                 return
             }
         case .anilist:
             // Extract ID for API call
-            let prefixes = ["https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id="] // Add other relevant prefixes if needed
+            // Example ID format: steinsgate-3
             func extractIdentifier(from fullUrl: String) -> String? {
                 if let watchRange = fullUrl.range(of: "/watch/") {
                     let potentialIdPart = String(fullUrl[watchRange.upperBound...])
-                    // The ID might be the part before the first '?' or the whole part if no '?'
+                    // The ID is the part before the first '?'
                     return String(potentialIdPart.split(separator: "?")[0])
                 }
-                for prefix in prefixes {
-                    if let idRange = fullUrl.range(of: prefix) {
-                        let startIndex = fullUrl.index(idRange.upperBound, offsetBy: 0)
-                        if let endRange = fullUrl[startIndex...].range(of: "?ep=") ?? fullUrl[startIndex...].range(of: "&ep=") {
-                            return String(fullUrl[startIndex..<endRange.lowerBound])
-                        }
-                    }
-                }
+                // Handle case where URL might be like /anime/steinsgate-3
+                if let animeRange = fullUrl.range(of: "/anime/") {
+                     let potentialIdPart = String(fullUrl[animeRange.upperBound...])
+                     return potentialIdPart // Assume the rest is the ID
+                 }
+
+                // Check if href itself looks like an ID (no slashes, maybe contains '-')
+                if !fullUrl.contains("/") && fullUrl.contains("-") {
+                     return fullUrl
+                 }
+
                 return nil
             }
 
             if let identifier = extractIdentifier(from: href) {
                 fullUrlString = baseUrl + identifier
-            } else if !href.contains("/") { // Assume href is just the ID
+            } else if !href.contains("/") { // Assume href is just the ID if no slashes
                 fullUrlString = baseUrl + href
-            } else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid AniList URL format."])))
-                return
             }
+             else {
+                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid AniList URL format."])))
+                 return
+             }
 
         default:
             // Default construction for most HTML sources
@@ -104,9 +113,11 @@ class AnimeDetailService {
         }
 
         guard let fullUrl = URL(string: fullUrlString) else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL constructed."])))
+            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL constructed: \(fullUrlString)"])))
             return
         }
+
+        print("Fetching details from: \(fullUrl.absoluteString) for source: \(selectedSource.rawValue)")
 
         // --- Data Fetching and Parsing ---
         if selectedSource == .anilibria {
@@ -116,16 +127,17 @@ class AnimeDetailService {
                     let aliases = anilibriaResponse.names.en
                     let synopsis = anilibriaResponse.description
                     let airdate = "\(anilibriaResponse.season.year) \(anilibriaResponse.season.string)"
-                    let stars = String(anilibriaResponse.inFavorites)
+                    let stars = String(anilibriaResponse.inFavorites) // Using favorites count as 'stars' for consistency
 
-                    let episodes = anilibriaResponse.player.list.map { (key, value) -> Episode in
-                        let episodeNumber = key
-                        let fhdUrl = value.hls.fhd.map { "https://cache.libria.fun\($0)" }
-                        let hdUrl = value.hls.hd.map { "https://cache.libria.fun\($0)" }
-                        let sdUrl = value.hls.sd.map { "https://cache.libria.fun\($0)" }
-                        let selectedUrl = fhdUrl ?? hdUrl ?? sdUrl ?? ""
-                        return Episode(number: episodeNumber, href: selectedUrl, downloadUrl: "")
-                    }.sorted { Int($0.number) ?? 0 < Int($1.number) ?? 0 }
+                    let episodes = anilibriaResponse.player.list.compactMap { (key, value) -> Episode? in // Use compactMap
+                        guard let episodeNumber = Int(key) else { return nil } // Ensure key is an Int
+                        let fhdUrl = value.hls.fhd.flatMap { URL(string: "https://cache.libria.fun\($0)") }
+                        let hdUrl = value.hls.hd.flatMap { URL(string: "https://cache.libria.fun\($0)") }
+                        let sdUrl = value.hls.sd.flatMap { URL(string: "https://cache.libria.fun\($0)") }
+                        // Prioritize qualities, ensure URL is valid
+                        guard let selectedUrl = (fhdUrl ?? hdUrl ?? sdUrl)?.absoluteString else { return nil }
+                        return Episode(number: String(episodeNumber), href: selectedUrl, downloadUrl: "") // Download URL might need separate logic
+                    }.sorted { $0.episodeNumber < $1.episodeNumber } // Sort numerically
 
                     let details = AnimeDetail(aliases: aliases, synopsis: synopsis, airdate: airdate, stars: stars, episodes: episodes)
                     completion(.success(details))
@@ -150,13 +162,22 @@ class AnimeDetailService {
                     let description = infoDict["description"] as? String ?? "No description available."
                     let name = infoDict["name"] as? String ?? "Unknown Title"
                     let premiered = moreInfo["premiered"] as? String ?? "N/A"
-                    let malscore = moreInfo["malscore"] as? String ?? "N/A"
+                    // Safely access malscore, handle different types
+                    let malscore: String
+                    if let scoreDouble = moreInfo["malscore"] as? Double {
+                        malscore = String(format: "%.2f", scoreDouble)
+                    } else if let scoreString = moreInfo["malscore"] as? String {
+                        malscore = scoreString
+                    } else {
+                        malscore = "N/A"
+                    }
+
 
                     let aliases = name // Assuming 'name' is the primary alias
                     let airdate = premiered
                     let stars = malscore
 
-                    // Fetch episodes separately using the API endpoint for episodes
+                    // Use the original href (which might contain episode info for context) to fetch episodes
                     fetchAniListEpisodes(from: href) { result in // Pass original href
                         switch result {
                         case .success(let episodes):
@@ -184,7 +205,6 @@ class AnimeDetailService {
                         var episodes: [Episode] = [] // Initialize episodes
 
                         // --- Source-specific HTML parsing logic ---
-                        // (Keep the existing switch cases here, ensure they handle errors gracefully)
                         switch selectedSource {
                          case .animeWorld:
                              aliases = try document.select("div.widget-title h1").attr("data-jtitle")
@@ -193,9 +213,10 @@ class AnimeDetailService {
                              stars = try document.select("dd.rating span").text()
                          case .gogoanime:
                              aliases = try document.select("div.anime_info_body_bg p.other-name a").text()
-                             synopsis = try document.select("div.anime_info_body_bg div.description").text()
+                             // Combine all paragraphs within the description div
+                             synopsis = try document.select("div.anime_info_body_bg div.description p").array().map { try $0.text() }.joined(separator: "\n")
                              airdate = try document.select("p.type:contains(Released:)").first()?.text().replacingOccurrences(of: "Released: ", with: "") ?? ""
-                             stars = ""
+                             stars = try document.select("p.type:contains(Status:)").first()?.text().replacingOccurrences(of: "Status: ", with: "") ?? "" // Using Status as 'stars'
                          case .animeheaven:
                              aliases = try document.select("div.infodiv div.infotitlejp").text()
                              synopsis = try document.select("div.infodiv div.infodes").text()
@@ -207,69 +228,60 @@ class AnimeDetailService {
                              airdate = try document.select("div.divAnimePageInfo div.animeInfo span.spanAnimeInfo").last()?.text() ?? ""
                              stars = try document.select("div.div_anime_score h4.text-white").text()
                          case .kuramanime:
-                             aliases = try document.select("div.anime__details__title span").last()?.text() ?? ""
-                             synopsis = try document.select("div.anime__details__text p").text()
-                             // Safely unwrap and cast
-                              if let dateText = try document.select("div.anime__details__widget ul li div.col-9").eq(3).text().components(separatedBy: "s/d").first?.trimmingCharacters(in: .whitespaces) {
-                                   airdate = dateText
-                               } else {
-                                   airdate = "" // Or some default/error value
-                               }
-                             stars = try document.select("div.anime__details__widget div.row div.col-lg-6 ul li").select("div:contains(Skor:) ~ div.col-9").text()
-                         case .anime3rb:
-                             aliases = ""
-                             synopsis = try document.select("p.leading-loose").text()
-                             airdate = try document.select("td[title]").attr("title")
-                             stars = try document.select("p.text-lg.leading-relaxed").first()?.text() ?? ""
-                         case .animesrbija:
-                              aliases = try document.select("h3.anime-eng-name").text()
-                              let rawSynopsis = try document.select("div.anime-description").text()
-                              synopsis = rawSynopsis.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                              if let dateElement = try document.select("div.anime-information-col div:contains(Datum:)").first()?.text(),
-                                 let dateStr = dateElement.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) {
-                                  airdate = dateStr.components(separatedBy: "to").first?.trimmingCharacters(in: .whitespaces) ?? ""
-                              } else { airdate = "" }
-                              if let scoreElement = try document.select("div.anime-information-col div:contains(MAL Ocena:)").first()?.text(),
-                                 let scoreStr = scoreElement.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) {
-                                  stars = scoreStr
-                              } else { stars = "" }
-                         case .aniworld:
-                             aliases = ""
-                             synopsis = try document.select("p.seri_des").text()
-                             airdate = "N/A"
-                             stars = "N/A"
-                         case .tokyoinsider:
-                             aliases = ""
-                             synopsis = try document.select("td[style*='border-bottom: 0']").text()
-                             airdate = try document.select("tr.c_h2:contains(Vintage:)").select("td:not(:has(b))").text()
-                             stars = "N/A"
-                         case .anivibe:
-                             aliases = try document.select("span.alter").text()
-                             synopsis = try document.select("div.synp div.entry-content").text()
-                             airdate = try document.select("div.split").text()
-                             stars = "N/A"
-                         case .animeunity:
-                             aliases = ""
-                             synopsis = try document.select("div.description").text()
-                             airdate = "N/A"
-                             stars = "N/A"
-                         case .animeflv:
-                             aliases = try document.select("span.TxtAlt").text()
-                             synopsis = try document.select("div.Description p").text()
-                             airdate = "N/A"
-                             stars = "N/A"
-                         case .animebalkan:
-                             aliases = ""
-                             synopsis = try document.select("div.entry-content").text()
-                             airdate = "N/A"
-                             stars = "N/A"
-                         case .anibunker:
-                             aliases = ""
-                             synopsis = try document.select("div.sinopse--display p").text()
-                             airdate = try document.select("div.field-info:contains(Ano:)").first()?.text().replacingOccurrences(of: "Ano: ", with: "") ?? ""
-                             stars = "N/A"
-                         case .anilist, .anilibria: // Should not be reached here
-                             print("Error: HTML parsing called for API source \(selectedSource.rawValue)")
+                              aliases = try document.select("div.anime__details__title span").last()?.text() ?? ""
+                              synopsis = try document.select("div.anime__details__text p").text()
+                              // Safely find and extract the date
+                              airdate = try document.select("div.anime__details__widget ul li:has(div:containsOwn(Date aired:)) div.col-9").first()?.text().components(separatedBy: "to").first?.trimmingCharacters(in: .whitespaces) ?? ""
+                              stars = try document.select("div.anime__details__widget ul li:has(div:containsOwn(Score:)) div.col-9").first()?.text() ?? ""
+                          case .anime3rb:
+                              aliases = "" // Often no specific alias field
+                              synopsis = try document.select("p.leading-loose").first()?.text() ?? "" // More specific selector if possible
+                              airdate = try document.select("div.flex.items-center.gap-2 span:contains(تاريخ)").first()?.nextElementSibling()?.text() ?? "" // Find based on label
+                              stars = try document.select("div.flex.items-center.gap-2 span:contains(التقييم)").first()?.nextElementSibling()?.text() ?? "" // Find based on label
+                          case .animesrbija:
+                               aliases = try document.select("h3.anime-eng-name").text()
+                               let rawSynopsis = try document.select("div.anime-description").text()
+                               synopsis = rawSynopsis // Keep raw text, cleaning might remove important info
+                               airdate = try document.select("div.anime-information-col div:containsOwn(Datum:)").first()?.text().replacingOccurrences(of: "Datum:", with: "").trimmingCharacters(in: .whitespaces) ?? ""
+                               stars = try document.select("div.anime-information-col div:containsOwn(MAL Ocena:)").first()?.text().replacingOccurrences(of: "MAL Ocena:", with: "").trimmingCharacters(in: .whitespaces) ?? ""
+                          case .aniworld:
+                              aliases = try document.select("div.seriesDetails span > i").first()?.text() ?? "" // Get original title
+                              synopsis = try document.select("p.seri_des").text()
+                              airdate = try document.select("div.genres + div > span").eq(1).text() // Get year
+                              stars = try document.select("div.rating পঞ্চ > span").first()?.text() ?? "" // Get rating score
+                          case .tokyoinsider:
+                              aliases = "" // No clear alias field usually
+                              synopsis = try document.select("div#synopsis > p").text() // More specific selector
+                              airdate = try document.select("div.static_single:contains(Vintage) span.static_single_val").text()
+                              stars = try document.select("div.static_single:contains(Rating) span.static_single_val").text().components(separatedBy: "(").first?.trimmingCharacters(in: .whitespaces) ?? "" // Extract score
+                          case .anivibe:
+                              aliases = try document.select("span.alter").text()
+                              synopsis = try document.select("div.synp div.entry-content").text()
+                              airdate = try document.select("div.spe span:contains(Aired:)").first()?.ownText() ?? "" // Extract aired date
+                              stars = try document.select("div.spe span:contains(Rating:)").first()?.ownText() ?? "" // Extract rating
+                          case .animeunity:
+                              aliases = "" // Often no alias
+                              synopsis = try document.select("div.description").text()
+                              airdate = try document.select("div.extra span:contains(Anno)").first()?.ownText() ?? ""
+                              stars = try document.select("div.score > strong").text() // Get score
+                          case .animeflv:
+                               aliases = try document.select("span.TxtAlt").text()
+                               synopsis = try document.select("div.Description p").text()
+                               airdate = try document.select("span.Date").text() // Assuming Date span exists
+                               stars = try document.select("span.vtprmd").text() // Assuming rating span exists
+                           case .animebalkan:
+                                aliases = ""
+                                synopsis = try document.select("div.entry-content p").text() // More specific p tag
+                                airdate = try document.select("div.spe span:contains(Godina:)").first()?.ownText() ?? ""
+                                stars = try document.select("div.spe span:contains(Ocena:)").first()?.ownText() ?? ""
+                           case .anibunker:
+                                aliases = ""
+                                synopsis = try document.select("div.sinopse--display p").text()
+                                airdate = try document.select("div.field-info:contains(Ano:)").first()?.text().replacingOccurrences(of: "Ano: ", with: "") ?? ""
+                                stars = try document.select("div.rating-average span").text() // Find rating average
+
+                         // Should not be reached here for API sources
+                         case .anilist, .anilibria:
                              throw NSError(domain: "ParsingError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Incorrect parsing path for API source."])
                          }
 
@@ -289,28 +301,32 @@ class AnimeDetailService {
         }
     }
 
-    // Renamed function
+
+    // Fetch episodes specifically for AniList (HiAnime API)
     static func fetchAniListEpisodes(from href: String, completion: @escaping (Result<[Episode], Error>) -> Void) {
          let baseUrl = "https://aniwatch-api-gp1w.onrender.com/anime/episodes/" // API endpoint for episodes
 
          let fullUrlString: String
-         // Extract the core ID part from the href (e.g., "steinsgate-3" from "/watch/steinsgate-3?ep=...")
-         if let watchRange = href.range(of: "/watch/") {
-             let potentialIdPart = String(href[watchRange.upperBound...])
-             let idPart = String(potentialIdPart.split(separator: "?")[0])
-             fullUrlString = baseUrl + idPart
-         } else if !href.contains("/") { // Assume href is just the ID
-             fullUrlString = baseUrl + href
-         } else {
-             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid AniList href format for episode fetching."])))
-             return
-         }
+          // Extract the core ID part from the href (e.g., "steinsgate-3" from "/watch/steinsgate-3?ep=...")
+          if let watchRange = href.range(of: "/watch/") {
+              let potentialIdPart = String(href[watchRange.upperBound...])
+              let idPart = String(potentialIdPart.split(separator: "?")[0]) // Get part before '?'
+              fullUrlString = baseUrl + idPart
+          } else if let infoRange = href.range(of: "/info?id=") {
+               // Handle case where href is like ".../info?id=steinsgate-3"
+               let idPart = String(href[infoRange.upperBound...])
+               fullUrlString = baseUrl + idPart
+           } else if !href.contains("/") { // Assume href is just the ID if no slashes
+               fullUrlString = baseUrl + href
+           } else {
+               completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid AniList href format for episode fetching."])))
+               return
+           }
 
          guard let fullUrl = URL(string: fullUrlString) else {
-              completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL for AniList episodes."])))
+              completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL for AniList episodes: \(fullUrlString)"])))
               return
           }
-
 
          session.request(fullUrl).responseJSON { response in // Keep responseJSON for now
              switch response.result {
@@ -325,18 +341,34 @@ class AnimeDetailService {
 
                  let episodes = episodesArray.compactMap { episodeDict -> Episode? in
                      guard
-                         let episodeId = episodeDict["episodeId"] as? String, // The ID for fetching sources
+                         let episodeId = episodeDict["episodeId"] as? String, // ID for fetching sources
                          let number = episodeDict["number"] as? Int
                      else {
                          return nil
                      }
 
                      let episodeNumber = "\(number)"
-                     // Construct the href needed for *fetching sources*, which includes the episodeId
-                      let hrefForSources = "https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=\(episodeId)"
+                     // Construct the href needed for *fetching sources*
+                     // The href should include the base anime ID and the episode parameter
+                     let baseAnimeId: String
+                     if let watchRange = href.range(of: "/watch/") {
+                         let potentialIdPart = String(href[watchRange.upperBound...])
+                         baseAnimeId = String(potentialIdPart.split(separator: "?")[0])
+                     } else if let infoRange = href.range(of: "/info?id=") {
+                          baseAnimeId = String(href[infoRange.upperBound...])
+                      } else if !href.contains("/") {
+                          baseAnimeId = href
+                      } else {
+                           baseAnimeId = "unknown-anime-id" // Fallback or error
+                       }
+
+                     // Construct the source fetch URL: Need base ID and episode ID
+                     // Example: https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=steinsgate-3?ep=13499&category=sub&server=vidstreaming
+                      // The episodeId from the episodes endpoint seems to be the combined ID + ep param
+                     let hrefForSources = "https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=\(episodeId)"
 
                      return Episode(number: episodeNumber, href: hrefForSources, downloadUrl: "") // href is now the source fetch URL
-                 }
+                 }.sorted { $0.episodeNumber < $1.episodeNumber } // Sort numerically
 
                  completion(.success(episodes))
 
@@ -346,276 +378,291 @@ class AnimeDetailService {
          }
      }
 
-
+     // Common Episode Fetching Logic (with Source Differentiation)
     private static func fetchEpisodes(document: Document, for source: MediaSource, href: String) -> [Episode] {
         var episodes: [Episode] = []
         do {
             var episodeElements: Elements?
-            let downloadUrlElement: String = "" // Generally not available easily here
-            let baseURL = href // Base URL for resolving relative paths, if needed
+            var downloadUrlElement: String? = nil // Make optional
+            let baseURL = href // Use the provided href as the base for resolving relative paths
 
             switch source {
             case .animeWorld:
                 episodeElements = try document.select("div.server.active ul.episodes li.episode a")
             case .gogoanime:
-                 // Fetch total episodes to generate links
-                 let totalEpisodesString = try document.select("#episode_page li a").last()?.attr("ep_end") ?? "0"
-                 let totalEpisodes = Int(totalEpisodesString) ?? 0
-                 let animeIDPart = href.replacingOccurrences(of: "/category/", with: "") // Extract ID part
-
-                 episodes = (1...totalEpisodes).map { episodeNumber in
-                     let episodeHref = "https://anitaku.bz/\(animeIDPart)-episode-\(episodeNumber)"
-                     return Episode(number: "\(episodeNumber)", href: episodeHref, downloadUrl: "")
-                 }
-                 return episodes // Return early as we generated the list
-
-             case .animeheaven:
-                 episodeElements = try document.select("div.infoepisode a.pull-left") // Updated selector
-             case .animefire:
-                 episodeElements = try document.select("div.div_video_list a")
-             case .kuramanime:
-                  let episodeContent = try document.select("div#episodeListsSection a.follow-btn").attr("data-content")
-                  let episodeDocument = try SwiftSoup.parse(episodeContent)
-                  episodeElements = try episodeDocument.select("a.btn")
-              case .anime3rb:
-                  episodeElements = try document.select("div.absolute.overflow-hidden div a.gap-3")
-              case .animesrbija:
-                  episodeElements = try document.select("ul.anime-episodes-holder li.anime-episode-item")
-              case .aniworld:
-                  let seasonUrls = try extractSeasonUrls(document: document)
-                  let sortedSeasonUrls = seasonUrls.sorted { pair1, pair2 in
-                      let season1 = pair1.0
-                      let season2 = pair2.0
-                      if season1 == "F" { return false }
-                      if season2 == "F" { return true }
-                      return (Int(season1.dropFirst()) ?? 0) < (Int(season2.dropFirst()) ?? 0)
-                  }
-                  let group = DispatchGroup()
-                  var allEpisodes: [Episode] = []
-                  let queue = DispatchQueue(label: "com.aniworld.fetch", attributes: .concurrent)
-                  let syncQueue = DispatchQueue(label: "com.aniworld.sync")
-                  for (seasonNumber, seasonUrl) in sortedSeasonUrls {
-                      group.enter()
-                      queue.async {
-                          if let seasonEpisodes = try? fetchAniWorldSeasonEpisodes(seasonUrl: seasonUrl, seasonNumber: seasonNumber) {
-                              syncQueue.async {
-                                  allEpisodes.append(contentsOf: seasonEpisodes)
-                                  group.leave()
-                              }
-                          } else { group.leave() }
-                      }
-                  }
-                  group.wait()
-                  return allEpisodes.sorted {
-                      guard let num1 = Int($0.number.split(separator: "E").last ?? ""),
-                            let num2 = Int($1.number.split(separator: "E").last ?? "") else { return false }
-                      return num1 < num2
-                  }.uniqued(by: \.number)
-
-             case .tokyoinsider:
-                 episodeElements = try document.select("div.episode")
-             case .anivibe, .animebalkan:
-                 episodeElements = try document.select("div.eplister ul li a")
-             case .animeunity:
-                  let rawHtml = try document.html()
-                  if let startIndex = rawHtml.range(of: "<video-player")?.upperBound,
-                     let endIndex = rawHtml.range(of: "</video-player>")?.lowerBound {
-                       let videoPlayerContent = String(rawHtml[startIndex..<endIndex])
-                       if let episodesStart = videoPlayerContent.range(of: "episodes=\"")?.upperBound,
-                          let episodesEnd = videoPlayerContent[episodesStart...].range(of: "\"")?.lowerBound {
-                            let episodesJson = String(videoPlayerContent[episodesStart..<episodesEnd]).replacingOccurrences(of: """, with: "\"") // Corrected replacement
-                            if let episodesData = episodesJson.data(using: .utf8),
-                               let episodesList = try? JSONSerialization.jsonObject(with: episodesData) as? [[String: Any]] {
-                                 episodes = episodesList.compactMap { episodeDict in
-                                     guard let number = episodeDict["number"] as? String,
-                                           let link = episodeDict["link"] as? String else { return nil }
-                                     // Construct href using ID or link based on what AnimeUnity expects
-                                     let hrefEp: String
-                                     if let id = episodeDict["id"] as? Int { hrefEp = baseURL + "/\(id)" }
-                                     else { hrefEp = link } // Fallback? Verify this link format
-                                     return Episode(number: number, href: hrefEp, downloadUrl: "")
-                                 }
-                                 return episodes
-                             }
+                let totalEpisodesString = try document.select("#episode_page li a").last()?.attr("ep_end") ?? "0"
+                let totalEpisodes = Int(totalEpisodesString) ?? 0
+                let animeIDPart = href.replacingOccurrences(of: "/category/", with: "")
+                episodes = (1...totalEpisodes).map {
+                    let episodeHref = "https://anitaku.bz/\(animeIDPart)-episode-\($0)"
+                    return Episode(number: "\($0)", href: episodeHref, downloadUrl: "")
+                }
+                return episodes
+            case .animeheaven:
+                episodeElements = try document.select("div.infoepisode a.pull-left")
+            case .animefire:
+                episodeElements = try document.select("div.div_video_list a")
+            case .kuramanime:
+                let episodeContent = try document.select("div#episodeListsSection a.follow-btn").attr("data-content")
+                let episodeDocument = try SwiftSoup.parse(episodeContent)
+                episodeElements = try episodeDocument.select("a.btn")
+            case .anime3rb:
+                episodeElements = try document.select("div.absolute.overflow-hidden div a.gap-3")
+            case .animesrbija:
+                episodeElements = try document.select("ul.anime-episodes-holder li.anime-episode-item")
+            case .aniworld:
+                let seasonUrls = try extractSeasonUrls(document: document)
+                let sortedSeasonUrls = seasonUrls.sorted { pair1, pair2 in
+                    let season1 = pair1.0
+                    let season2 = pair2.0
+                    if season1 == "F" { return false } // Film comes last
+                    if season2 == "F" { return true }
+                    return (Int(season1.dropFirst()) ?? 0) < (Int(season2.dropFirst()) ?? 0)
+                }
+                let group = DispatchGroup()
+                var allEpisodes: [Episode] = []
+                let queue = DispatchQueue(label: "com.aniworld.fetch", attributes: .concurrent)
+                let syncQueue = DispatchQueue(label: "com.aniworld.sync") // For thread-safe appending
+                for (seasonNumber, seasonUrl) in sortedSeasonUrls {
+                    group.enter()
+                    queue.async {
+                        defer { group.leave() } // Ensure leave is always called
+                        do {
+                            if let seasonEpisodes = try? fetchAniWorldSeasonEpisodes(seasonUrl: seasonUrl, seasonNumber: seasonNumber) {
+                                syncQueue.async { // Safely append to shared array
+                                    allEpisodes.append(contentsOf: seasonEpisodes)
+                                }
+                            }
                         }
+                        // Ignore errors for individual seasons to get best effort
+                    }
+                }
+                group.wait() // Wait for all season fetches to complete
+                // Sort numerically based on extracted episode number after SxE format
+                return allEpisodes.sorted {
+                     $0.episodeNumber < $1.episodeNumber
+                 }.uniqued(by: \.number) // Keep unique episode numbers
+
+            case .tokyoinsider:
+                episodeElements = try document.select("div.episode a[href*='/episode/']") // Select only episode links
+            case .anivibe, .animebalkan:
+                episodeElements = try document.select("div.eplister ul li a")
+            case .animeunity:
+                 do {
+                      let rawHtml = try document.html()
+                      if let startIndex = rawHtml.range(of: "<video-player")?.upperBound,
+                         let endIndex = rawHtml.range(of: "</video-player>")?.lowerBound {
+                           let videoPlayerContent = String(rawHtml[startIndex..<endIndex])
+                           if let episodesStart = videoPlayerContent.range(of: "episodes=\"")?.upperBound,
+                              let episodesEnd = videoPlayerContent[episodesStart...].range(of: "\"")?.lowerBound {
+                                let episodesJson = String(videoPlayerContent[episodesStart..<episodesEnd]).replacingOccurrences(of: """, with: "\"") // Corrected replacement
+                                if let episodesData = episodesJson.data(using: .utf8),
+                                   let episodesList = try? JSONSerialization.jsonObject(with: episodesData) as? [[String: Any]] {
+                                     episodes = episodesList.compactMap { episodeDict in
+                                         guard let number = episodeDict["number"] as? String,
+                                               let slug = episodeDict["slug"] as? String else { return nil }
+                                         let hrefEp = "\(href)/\(slug)" // Construct detail URL
+                                         return Episode(number: number, href: hrefEp, downloadUrl: "")
+                                     }
+                                     return episodes.sorted { $0.episodeNumber < $1.episodeNumber } // Sort numerically
+                                 }
+                            }
+                      }
+                      print("Could not extract episodes from AnimeUnity video-player tag.")
+                      return [] // Return empty if extraction failed
+                  } catch {
+                       print("Error parsing AnimeUnity episodes: \(error.localizedDescription)")
+                       return []
+                   }
+            case .animeflv:
+                 do {
+                      let rawHtml = try document.html()
+                      // Updated Regex to capture both episode number and ID
+                      let pattern = #"\["(\d+)","([^"]+)"\]"# // Capture number and the string ID
+                      let regex = try NSRegularExpression(pattern: pattern)
+                      let matches = regex.matches(in: rawHtml, range: NSRange(rawHtml.startIndex..., in: rawHtml))
+
+                      guard !matches.isEmpty else {
+                          print("No episodes found via regex for AnimeFLV.")
+                          return []
+                      }
+
+                      let modifiedBaseURL = baseURL.replacingOccurrences(of: "/anime/", with: "/ver/")
+
+                      episodes = matches.compactMap { match in
+                          guard match.numberOfRanges == 3, // Expect 3 ranges: full match, group 1 (number), group 2 (id)
+                                let numberRange = Range(match.range(at: 1), in: rawHtml),
+                                let _ = Range(match.range(at: 2), in: rawHtml) // Use the ID if needed later, for now just the number
+                          else { return nil }
+
+                          let episodeNumberStr = String(rawHtml[numberRange])
+                          // Construct the href using the episode number
+                          let hrefEp = "\(modifiedBaseURL)-\(episodeNumberStr)"
+                          return Episode(number: episodeNumberStr, href: hrefEp, downloadUrl: "")
+                      }
+                      // Sort numerically
+                      return episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+
+                  } catch {
+                      print("Error parsing AnimeFLV episodes via regex: \(error.localizedDescription)")
+                      return []
                   }
-                  print("Could not extract episodes from AnimeUnity video-player tag.")
-                  return [] // Return empty if extraction failed
-
-             case .animeflv:
-                  do {
-                       let rawHtml = try document.html()
-                       // Regex to find the highest episode number listed in the JS array `episodes = [[epNum, id], ...]`
-                       let pattern = #"var episodes\s*=\s*\[\[(\d+),\d+\]"#
-                       if let regex = try? NSRegularExpression(pattern: pattern, options: []),
-                          let match = regex.firstMatch(in: rawHtml, options: [], range: NSRange(location: 0, length: rawHtml.utf16.count)),
-                          let range = Range(match.range(at: 1), in: rawHtml),
-                          let highestEpisodeNum = Int(String(rawHtml[range])) {
-
-                           let modifiedBaseURL = baseURL.replacingOccurrences(of: "/anime/", with: "/ver/")
-
-                           for episodeNumber in 1...highestEpisodeNum {
-                               let hrefEp = "\(modifiedBaseURL)-\(episodeNumber)"
-                               let episode = Episode(number: "\(episodeNumber)", href: hrefEp, downloadUrl: "")
-                               episodes.append(episode)
-                           }
-                           return episodes // Return generated list
-                       } else { print("No episodes found via regex for AnimeFLV.") }
-                   } catch { print("Error parsing AnimeFLV episodes via regex: \(error.localizedDescription)") }
-                   return [] // Return empty on error
-
-             case .anibunker:
-                 episodeElements = try document.select("div.eps-display a")
-             case .anilist, .anilibria: // Explicitly ignore API sources here
-                 return []
+            case .anibunker:
+                episodeElements = try document.select("div.eps-display a")
+            // API sources handled elsewhere
+            case .anilist, .anilibria:
+                return []
             }
 
-
-            // Common parsing logic for HTML sources (needs refinement per source)
+            // Common HTML element parsing (refined)
             guard let elements = episodeElements else { return [] }
-
             episodes = elements.compactMap { element -> Episode? in
-                do {
-                    let episodeText: String
-                    let hrefEp: String
+                 do {
+                     var episodeText: String?
+                     var hrefEp: String?
+                     let sourceBaseURL: String? // Specific base URL for resolving relative links
 
-                    switch source {
-                    case .animeheaven:
-                        episodeText = try element.select("div.watch2").text() // Adjusted selector
-                        hrefEp = try element.attr("href")
-                    case .animefire:
-                        let titleText = try element.text()
-                        episodeText = titleText.components(separatedBy: " ").last ?? ""
-                        hrefEp = try element.attr("href")
-                    case .kuramanime:
+                     switch source {
+                     case .animeWorld:
+                         episodeText = try element.text()
+                         hrefEp = try element.attr("href")
+                         sourceBaseURL = "https://animeworld.so"
+                     case .animeheaven:
+                         episodeText = try element.select("div.watch2").text()
+                         hrefEp = try element.attr("href")
+                         sourceBaseURL = "https://animeheaven.me"
+                     case .animefire:
+                         let titleText = try element.text()
+                         episodeText = titleText.components(separatedBy: " ").last ?? ""
+                         hrefEp = try element.attr("href")
+                         sourceBaseURL = "https://animefire.plus"
+                     case .kuramanime:
                          episodeText = try element.text().replacingOccurrences(of: "Ep ", with: "")
                          hrefEp = try element.attr("href")
-                    case .anime3rb:
+                         sourceBaseURL = "https://kuramanime.red" // Example base
+                     case .anime3rb:
                          let titleText = try element.select("div.video-metadata span").first()?.text() ?? ""
                          episodeText = titleText.replacingOccurrences(of: "الحلقة ", with: "")
                          hrefEp = try element.attr("href")
-                    case .animesrbija:
+                         sourceBaseURL = "https://anime3rb.com"
+                     case .animesrbija:
                          episodeText = try element.select("span.anime-episode-num").text().replacingOccurrences(of: "Epizoda ", with: "")
-                         let baseHref = try element.select("a.anime-episode-link").attr("href")
-                         hrefEp = "https://www.animesrbija.com" + baseHref
-                    case .aniworld: // Handled above
-                         return nil
-                    case .tokyoinsider:
-                         episodeText = try element.select("strong").text()
-                         let baseHref = try element.select("a.download-link").attr("href")
-                         guard baseHref.contains("/episode/") else { return nil } // Filter out non-episode links
-                         hrefEp = "https://www.tokyoinsider.com" + baseHref
-                     case .anivibe, .animebalkan:
+                         hrefEp = try element.select("a.anime-episode-link").attr("href")
+                         sourceBaseURL = "https://www.animesrbija.com"
+                     case .tokyoinsider:
+                          episodeText = try element.select("strong").text() // Get number from <strong>
+                          hrefEp = try element.attr("href")
+                          sourceBaseURL = "https://www.tokyoinsider.com"
+                     case .anivibe:
                           episodeText = try element.select("div.epl-num").text()
-                          let baseHref = try element.attr("href")
-                          let baseUrlPrefix = (source == .anivibe) ? "https://anivibe.net" : "https://animebalkan.org" // Or maybe empty if href is full?
-                          hrefEp = baseUrlPrefix + baseHref // Adjust if href is absolute
-                     case .animeunity, .animeflv, .gogoanime: // Handled above
-                         return nil
+                          hrefEp = try element.attr("href")
+                          sourceBaseURL = "https://anivibe.net"
+                     case .animebalkan:
+                          episodeText = try element.select("div.epl-num").text()
+                          hrefEp = try element.attr("href")
+                          sourceBaseURL = "https://animebalkan.org" // Or .gg if needed
                      case .anibunker:
                           episodeText = try element.select("div.ep_number").text()
-                          let baseHref = try element.attr("href")
-                          hrefEp = "https://www.anibunker.com" + baseHref
-                     default: // Fallback for AnimeWorld and potentially others
-                         episodeText = try element.text()
-                         hrefEp = try element.attr("href")
-                    }
+                          hrefEp = try element.attr("href")
+                          sourceBaseURL = "https://www.anibunker.com"
+                     // Explicitly ignore sources handled elsewhere or API sources
+                     case .gogoanime, .aniworld, .animeunity, .animeflv, .anilist, .anilibria:
+                          return nil
+                     }
 
-                    // Basic validation
-                    guard !episodeText.isEmpty, !hrefEp.isEmpty else { return nil }
+                     guard let finalEpisodeText = episodeText?.nilIfEmpty, let finalHref = hrefEp?.nilIfEmpty else { return nil }
 
-                    // Ensure href is absolute
-                     let finalHref: String
-                     if !hrefEp.hasPrefix("http"), let baseUrlURL = URL(string: baseURL) {
-                          finalHref = URL(string: hrefEp, relativeTo: baseUrlURL)?.absoluteString ?? hrefEp
+                     // Construct absolute URL
+                     let absoluteHref: String
+                     if finalHref.hasPrefix("http") {
+                          absoluteHref = finalHref
+                      } else if let base = sourceBaseURL, let resolvedURL = URL(string: finalHref, relativeTo: URL(string: base)) {
+                          absoluteHref = resolvedURL.absoluteString
                       } else {
-                           finalHref = hrefEp
+                           print("Warning: Could not resolve relative URL for \(source.rawValue): \(finalHref)")
+                           absoluteHref = finalHref // Fallback to using it as is
                        }
 
+                     return Episode(number: finalEpisodeText, href: absoluteHref, downloadUrl: downloadUrlElement ?? "")
 
-                    return Episode(number: episodeText, href: finalHref, downloadUrl: downloadUrlElement) // Use finalHref
-                } catch {
-                    print("Error parsing episode element for \(source.rawValue): \(error.localizedDescription)")
-                    return nil
-                }
+                 } catch {
+                     print("Error parsing episode element for \(source.rawValue): \(error.localizedDescription)")
+                     return nil
+                 }
             }
 
         } catch {
             print("Error parsing episodes for source \(source.rawValue): \(error.localizedDescription)")
         }
-        return episodes
+        // Sort numerically after collecting all episodes
+         return episodes.sorted { $0.episodeNumber < $1.episodeNumber }
     }
 
 
-    private static func extractSeasonUrls(document: Document) throws -> [(String, String)] {
-        let seasonElements = try document.select("div.hosterSiteDirectNav a[title]")
+    // MARK: - Helpers (Moved from AnimeDetailViewController for context)
+    // (Keep extractSeasonUrls, fetchAniWorldSeasonEpisodes here as they are static and used by fetchEpisodes)
 
-        return seasonElements.compactMap { element in
-            do {
-                let href = try element.attr("href")
-                let title = try element.attr("title")
+     private static func extractSeasonUrls(document: Document) throws -> [(String, String)] {
+         let seasonElements = try document.select("div.hosterSiteDirectNav a[title]")
 
-                if title.contains("Filme") {
-                    return ("F", "https://aniworld.to" + href)
-                } else if title.contains("Staffel"),
-                          let seasonNum = title.components(separatedBy: " ").last {
-                    return ("S\(seasonNum)", "https://aniworld.to" + href)
-                }
-                return nil
-            } catch {
-                return nil
-            }
-        }
-    }
+         return seasonElements.compactMap { element in
+             do {
+                 let href = try element.attr("href")
+                 let title = try element.attr("title")
 
-    private static func fetchAniWorldSeasonEpisodes(seasonUrl: String, seasonNumber: String) throws -> [Episode] {
-        let config = URLSessionConfiguration.default
-        config.requestCachePolicy = .returnCacheDataElseLoad
-        config.urlCache = URLCache.shared
-
-        let session = URLSession(configuration: config)
-        guard let url = URL(string: seasonUrl) else { throw URLError(.badURL) }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var resultHtml: String?
-        var resultError: Error?
-
-        let task = session.dataTask(with: url) { data, response, error in
-            if let error = error {
-                resultError = error
-            } else if let data = data,
-                      let html = String(data: data, encoding: .utf8) {
-                resultHtml = html
-            }
-            semaphore.signal()
-        }
-        task.resume()
-
-        semaphore.wait()
-
-        if let error = resultError { throw error }
-        guard let html = resultHtml else { throw URLError(.badServerResponse) }
-
-        let document = try SwiftSoup.parse(html)
-
-        return try document.select("table.seasonEpisodesList td a")
-            .compactMap { element -> Episode? in
-                let fullText = try element.text()
-                let episodeHref = try element.attr("href")
-
-                // Updated logic to extract episode number more reliably
-                 guard let episodeNumberStr = fullText.components(separatedBy: CharacterSet.decimalDigits.inverted).filter({ !$0.isEmpty }).first, // Get first sequence of digits
-                       let episodeNumber = Int(episodeNumberStr) else { return nil }
-
-                let paddedEpisodeNumber = String(format: "%02d", episodeNumber) // Keep padding
-                let formattedEpisodeNumber = "\(seasonNumber)E\(paddedEpisodeNumber)"
-
-                return Episode(number: formattedEpisodeNumber, href: "https://aniworld.to" + episodeHref, downloadUrl: "")
-            }
-            .sorted { // Sort by episode number within the season
-                 guard let num1Str = $0.number.split(separator: "E").last, let num1 = Int(num1Str),
-                       let num2Str = $1.number.split(separator: "E").last, let num2 = Int(num2Str) else { return false }
-                 return num1 < num2
+                 if title.contains("Filme") {
+                     return ("F", "https://aniworld.to" + href)
+                 } else if title.contains("Staffel"),
+                           let seasonNum = title.components(separatedBy: " ").last {
+                     return ("S\(seasonNum)", "https://aniworld.to" + href)
+                 }
+                 return nil
+             } catch {
+                 return nil
              }
-    }
+         }
+     }
+
+     private static func fetchAniWorldSeasonEpisodes(seasonUrl: String, seasonNumber: String) throws -> [Episode] {
+         let config = URLSessionConfiguration.default
+         config.requestCachePolicy = .returnCacheDataElseLoad
+         config.urlCache = URLCache.shared
+
+         let session = URLSession(configuration: config)
+         guard let url = URL(string: seasonUrl) else { throw URLError(.badURL) }
+
+         let semaphore = DispatchSemaphore(value: 0)
+         var resultHtml: String?
+         var resultError: Error?
+
+         let task = session.dataTask(with: url) { data, response, error in
+             if let error = error { resultError = error }
+             else if let data = data, let html = String(data: data, encoding: .utf8) { resultHtml = html }
+             semaphore.signal()
+         }
+         task.resume()
+         semaphore.wait()
+
+         if let error = resultError { throw error }
+         guard let html = resultHtml else { throw URLError(.badServerResponse) }
+
+         let document = try SwiftSoup.parse(html)
+
+         return try document.select("table.seasonEpisodesList td a")
+             .compactMap { element -> Episode? in
+                 let fullText = try element.text()
+                 let episodeHref = try element.attr("href")
+
+                  // Extract number from text like "Episode 1" or just "1"
+                  let episodeNumberStr = fullText.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+
+                  guard !episodeNumberStr.isEmpty, let _ = Int(episodeNumberStr) else { return nil } // Validate
+
+                 // Construct SxE format: e.g., S1E01
+                 let formattedEpisodeNumber = "\(seasonNumber)E\(episodeNumberStr)"
+
+                 return Episode(number: formattedEpisodeNumber, href: "https://aniworld.to" + episodeHref, downloadUrl: "")
+             }
+             // No need to sort here, sorting happens after combining all seasons
+     }
 }
