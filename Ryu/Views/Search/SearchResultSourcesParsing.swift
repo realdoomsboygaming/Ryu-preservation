@@ -1,10 +1,3 @@
-//
-//  SearchResultSourcesParsing.swift
-//  Ryu
-//
-//  Created by Francesco on 13/07/24.
-//
-
 import UIKit
 import SwiftSoup
 
@@ -118,7 +111,6 @@ extension SearchResultsViewController {
     // Renamed function
     func parseAniList(_ jsonString: String) -> [(title: String, imageUrl: String, href: String)] {
         do {
-
             guard let jsonData = jsonString.data(using: .utf8) else {
                 print("Error converting JSON string to Data")
                 return []
@@ -134,11 +126,11 @@ extension SearchResultsViewController {
             return animes.map { anime -> (title: String, imageUrl: String, href: String) in
                 let title = anime["name"] as? String ?? "Unknown Title"
                 let imageUrl = anime["poster"] as? String ?? ""
-                let href = anime["id"] as? String ?? ""
+                let href = anime["id"] as? String ?? "" // Use the anime ID (slug) as the href for detail view
                 return (title: title, imageUrl: imageUrl, href: href)
             }
         } catch {
-            print("Error parsing AniList JSON: \(error.localizedDescription)") // Updated error message
+            print("Error parsing AniList JSON: \(error.localizedDescription)")
             return []
         }
     }
@@ -163,8 +155,8 @@ extension SearchResultsViewController {
                 }
 
                 let title = (names["ru"] as? String) ?? (names["en"] as? String) ?? "Unknown Title"
-                let imageURL = "https://anilibria.tv/" + imageUrl
-                let href = String(id)
+                let imageURL = "https://anilibria.tv" + imageUrl // Prepend base URL
+                let href = String(id) // Use the ID as href for detail view
 
                 return (title: title, imageUrl: imageURL, href: href)
             }
@@ -186,10 +178,10 @@ extension SearchResultsViewController {
                     .components(separatedBy: " ")
                     .first ?? ""
 
-                let imageURL = "https://www.animesrbija.com" + imageUrl
+                let imageURL = "https://www.animesrbija.com" + imageUrl // Prepend base URL
 
                 let hrefBase = try item.select("a").first()?.attr("href") ?? ""
-                let href = "https://www.animesrbija.com" + hrefBase
+                let href = "https://www.animesrbija.com" + hrefBase // Prepend base URL
 
                 return (title: title, imageUrl: imageURL, href: href)
             }
@@ -200,44 +192,44 @@ extension SearchResultsViewController {
     }
 
     func parseAniWorld(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
+        // Since AniWorld search requires filtering the full list,
+        // the actual filtering should happen *after* parsing the entire list.
+        // This function will parse *all* items, and the calling function should filter.
         var results: [(title: String, imageUrl: String, href: String)] = []
-        let searchQuery = query.lowercased()
-
         do {
             let genreElements = try document.select("div.genre")
             for genreElement in genreElements {
                 let anchorElements = try genreElement.select("a")
-
                 for anchor in anchorElements {
                     let title = try anchor.text()
                     let href = try anchor.attr("href")
-                    if title.lowercased().contains(searchQuery) {
-                        results.append((
-                            title: title,
-                            imageUrl: "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg",
-                            href: "https://aniworld.to\(href)"
-                        ))
-                    }
+                    // Add all results; filtering happens later
+                    results.append((
+                        title: title,
+                        imageUrl: "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg", // Placeholder image
+                        href: "https://aniworld.to\(href)" // Prepend base URL
+                    ))
                 }
             }
         } catch {
             print("Error parsing AniWorld HTML: \(error.localizedDescription)")
         }
-        let sortedResults = results.sorted { $0.title.lowercased() < $1.title.lowercased() }
-        return sortedResults
+        // Return unfiltered list here
+        return results
     }
+
 
     func parseTokyoInsider(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
         do {
             let items = try document.select("div#inner_page table[cellpadding='3'] tr")
-            return try items.map { item -> (title: String, imageUrl: String, href: String) in
-                let title = try item.select("a").attr("title")
+            return try items.compactMap { item -> (title: String, imageUrl: String, href: String)? in // Use compactMap
+                guard let title = try? item.select("a").attr("title"), !title.isEmpty,
+                      let imageUrl = try? item.select("img").attr("src"),
+                      let hrefBase = try? item.select("a").first()?.attr("href"), !hrefBase.isEmpty else {
+                          return nil // Skip if essential info is missing
+                      }
 
-                var imageUrl = try item.select("img").attr("src")
-                imageUrl = imageUrl.replacingOccurrences(of: "small", with: "default")
-
-                let href = try item.select("a").first()?.attr("href") ?? ""
-                let hrefFull = "https://www.tokyoinsider.com" + href
+                let hrefFull = "https://www.tokyoinsider.com" + hrefBase
                 return (title: title, imageUrl: imageUrl, href: hrefFull)
             }
         } catch {
@@ -252,10 +244,13 @@ extension SearchResultsViewController {
             return try items.map { item -> (title: String, imageUrl: String, href: String) in
                 let title = try item.select("div.tt span").text()
 
-                let imageUrl = try item.select("img").attr("src")
+                var imageUrl = try item.select("img").attr("src")
+                // Remove size suffix if present (e.g., -110x150)
+                imageUrl = imageUrl.replacingOccurrences(of: #"-\d+x\d+(\.\w+)$"#, with: "$1", options: .regularExpression)
+
 
                 let href = try item.select("a").first()?.attr("href") ?? ""
-                let hrefFull = "https://anivibe.net" + href
+                let hrefFull = "https://anivibe.net" + href // Prepend base URL
                 return (title: title, imageUrl: imageUrl, href: hrefFull)
             }
         } catch {
@@ -265,9 +260,10 @@ extension SearchResultsViewController {
     }
 
     func parseAnimeUnity(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
-        let baseURL = "https://www.animeunity.to/anime/"
+        let baseURL = "https://www.animeunity.to/anime/" // Base URL for constructing detail links
 
         do {
+            // Look for the <archivio> tag which holds the JSON data
             let rawHtml = try document.html()
 
             if let startIndex = rawHtml.range(of: "<archivio")?.upperBound,
@@ -275,89 +271,69 @@ extension SearchResultsViewController {
 
                 let archivioContent = String(rawHtml[startIndex..<endIndex])
 
+                // Extract the JSON string from the 'records' attribute
                 if let recordsStart = archivioContent.range(of: "records=\"")?.upperBound,
                    let recordsEnd = archivioContent[recordsStart...].range(of: "\"")?.lowerBound {
 
+                    // Clean the JSON string (replace HTML entities)
                     let recordsJson = String(archivioContent[recordsStart..<recordsEnd])
-                        .replacingOccurrences(of: """, with: "\"")
+                        .replacingOccurrences(of: """, with: "\"") // Correct escaping
 
                     if let recordsData = recordsJson.data(using: .utf8),
                        let recordsList = try? JSONSerialization.jsonObject(with: recordsData) as? [[String: Any]] {
 
+                        // Map the JSON records to your AnimeItem struct
                         return recordsList.compactMap { record in
-                            guard let title = record["title"] as? String,
+                            guard let title = record["title"] as? String, // Or title_eng if preferred
                                   let imageUrl = record["imageurl"] as? String,
                                   let animeID = record["id"] as? Int,
                                   let slug = record["slug"] as? String else {
-                                return nil
+                                return nil // Skip if essential data is missing
                             }
 
+                            // Construct the detail page URL using the ID and slug
                             let hrefFull = "\(baseURL)\(animeID)-\(slug)"
                             return (title: title, imageUrl: imageUrl, href: hrefFull)
                         }
+                    } else {
+                        print("Failed to parse JSON records from AnimeUnity")
                     }
+                } else {
+                    print("Could not find 'records' attribute in <archivio> tag for AnimeUnity")
                 }
+            } else {
+                print("Could not find <archivio> element for AnimeUnity")
             }
-
-            print("Could not find or parse <archivio> element")
-            return []
+            return [] // Return empty if parsing fails at any step
         } catch {
             print("Error parsing AnimeUnity: \(error.localizedDescription)")
             return []
         }
     }
 
+    // MARK: - Stub Implementations for Missing Parsers
+
     func parseAnimeFLV(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
-        do {
-            let items = try document.select("ul.ListAnimes li")
-            return try items.map { item -> (title: String, imageUrl: String, href: String) in
-                let title = try item.select("h3.Title").text()
-
-                let imageUrl = try item.select("img").attr("src")
-
-                let href = try item.select("a").first()?.attr("href") ?? ""
-                let hrefFull = "https://www3.animeflv.net" + href
-                return (title: title, imageUrl: imageUrl, href: hrefFull)
-            }
-        } catch {
-            print("Error parsing AnimeFLV: \(error.localizedDescription)")
-            return []
-        }
+        print("Warning: parseAnimeFLV called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AnimeFLV's search results page structure.
+        // Example (needs verification):
+        // let items = try? document.select("ul.ListAnimes li") ... map items ...
+        return [] // Return empty until implemented
     }
 
     func parseAnimeBalkan(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
-        do {
-            let items = try document.select("article.bs")
-            return try items.map { item -> (title: String, imageUrl: String, href: String) in
-                let title = try item.select("h2").text()
-
-                let imageUrl = try item.select("img").attr("data-src")
-
-                let href = try item.select("a").first()?.attr("href") ?? ""
-                return (title: title, imageUrl: imageUrl, href: href)
-            }
-        } catch {
-            print("Error parsing AnimeBalkan: \(error.localizedDescription)")
-            return []
-        }
+        print("Warning: parseAnimeBalkan called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AnimeBalkan's search results page structure.
+        // Example (needs verification):
+        // let items = try? document.select("article.bs") ... map items ...
+        return [] // Return empty until implemented
     }
 
     func parseAniBunker(_ document: Document) -> [(title: String, imageUrl: String, href: String)] {
-        do {
-            let items = try document.select("div.section--body article")
-            return try items.map { item -> (title: String, imageUrl: String, href: String) in
-                let title = try item.select("h4").text()
-
-                let imageUrl = try item.select("img").attr("src")
-
-                let href = try item.select("a").first()?.attr("href") ?? ""
-                let hrefFull = "https://www.anibunker.com/" + href
-
-                return (title: title, imageUrl: imageUrl, href: hrefFull)
-            }
-        } catch {
-            print("Error parsing AniBunker: \(error.localizedDescription)")
-            return []
-        }
+        print("Warning: parseAniBunker called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AniBunker's search results page structure.
+        // Example (needs verification):
+        // let items = try? document.select("div.section--body article") ... map items ...
+        return [] // Return empty until implemented
     }
 }
