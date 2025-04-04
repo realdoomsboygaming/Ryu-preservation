@@ -4,6 +4,20 @@ import GoogleCast
 import MediaPlayer
 import AVFoundation
 
+// Helper extension to find the parent ViewController
+extension UIView {
+    func findViewController() -> UIViewController? {
+        if let nextResponder = self.next as? UIViewController {
+            return nextResponder
+        } else if let nextResponder = self.next as? UIView {
+            return nextResponder.findViewController()
+        } else {
+            return nil
+        }
+    }
+}
+
+
 class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRemoteMediaClientListener {
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
@@ -54,6 +68,9 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
     private var subtitleBorderWidth: CGFloat = 1
     private var subtitleBorderColor: UIColor = .black
     private var areSubtitlesHidden = false
+
+    // Gesture Recognizer reference for hold speed check
+    private var holdGestureRecognizer: UILongPressGestureRecognizer?
 
     // MARK: - UI Elements (Lazy Initialization)
     private lazy var playPauseButton: UIImageView = {
@@ -113,7 +130,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          return view
      }()
 
-
     private lazy var currentTimeLabel: UILabel = {
         let label = UILabel()
         label.textColor = .white
@@ -166,8 +182,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         button.setImage(UIImage(systemName: "speedometer"), for: .normal)
         button.tintColor = .white
         button.showsMenuAsPrimaryAction = true // Enable UIMenu interaction
-        // Target removed, handled by showsMenuAsPrimaryAction
-        // button.addTarget(self, action: #selector(speedButtonTapped), for: .touchUpInside)
         return button
     }()
 
@@ -195,7 +209,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         let imageView = UIImageView(image: UIImage(systemName: "xmark"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissButtonTapped))
+        // Renamed selector to avoid conflict
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissPlayerView))
         imageView.addGestureRecognizer(tapGesture)
         imageView.contentMode = .scaleAspectFit
         return imageView
@@ -205,7 +220,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         let imageView = UIImageView(image: UIImage(systemName: "pip.enter"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(pipButtonTapped))
+        // Renamed selector to avoid conflict
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(togglePictureInPicture))
         imageView.addGestureRecognizer(tapGesture)
         imageView.isHidden = !AVPictureInPictureController.isPictureInPictureSupported() // Hide if PiP not supported
         imageView.contentMode = .scaleAspectFit
@@ -226,7 +242,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         return label
     }()
 
-    private lazy var airplayButton: UIImageView = { // Changed to UIImageView
+    // Corrected type to AVRoutePickerView
+    private lazy var airplayButton: AVRoutePickerView = {
          let airplayView = AVRoutePickerView()
          airplayView.activeTintColor = .systemTeal
          airplayView.tintColor = .white // Set default tint
@@ -300,7 +317,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          player?.addObserver(self, forKeyPath: #keyPath(AVPlayer.currentItem.status), options: [.new, .initial], context: nil)
 
         // Observe playback end
-        NotificationCenter.default.addObserver(self, selector: #selector(playerItemDidReachEnd), name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem) // Observe specific item
+        NotificationCenter.default.addObserver(self, selector: #selector(playerItemDidReachEnd), name: .AVPlayerItemDidPlayToEndTime, object: nil) // Observe all player items
 
         // Setup PiP controller if supported
         if AVPictureInPictureController.isPictureInPictureSupported() {
@@ -313,30 +330,33 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
           // Allow interaction with controls even when hidden if the tap is on them
           if controlsContainerView.alpha > 0 {
                for subview in controlsContainerView.subviews.reversed() { // Check top-most views first
-                    if subview.frame.contains(convert(point, to: controlsContainerView)) && subview.isUserInteractionEnabled {
+                   // Check if the subview is visible and interactive, and contains the touch point
+                   if !subview.isHidden && subview.alpha > 0 && subview.isUserInteractionEnabled && subview.frame.contains(convert(point, to: controlsContainerView)) {
                         // If the tap is on a control, ensure controls are shown before returning the view
                          if !isControlsVisible { showControls() }
+                        // Pass the hit test down to the subview
                         return subview.hitTest(convert(point, to: subview), with: event) ?? subview
                     }
                 }
            }
-           // Also check progressBarContainer separately if controls are hidden
-            if progressBarContainer.frame.contains(point) && progressBarContainer.isUserInteractionEnabled {
+           // Also check progressBarContainer separately
+           // Use self.convert for coordinate conversion
+           if progressBarContainer.frame.contains(point) && progressBarContainer.isUserInteractionEnabled {
                 if !isControlsVisible { showControls() }
                 return progressBarContainer.hitTest(convert(point, to: progressBarContainer), with: event) ?? progressBarContainer
             }
 
 
            // If tap is not on controls or progress bar, handle show/hide
-           if let view = super.hitTest(point, with: event), view == self || view == controlsContainerView {
+           // Ensure the hit view is the background (self) or the controls container itself
+           if let view = super.hitTest(point, with: event), (view == self || view == controlsContainerView) {
                handleTap() // Show/hide controls on background tap
-               return self // Intercept tap on background
+               return self // Intercept tap on background so it doesn't fall through
            }
 
 
            return super.hitTest(point, with: event) // Default behavior otherwise
        }
-
 
     private func setupUI() {
         // Add subviews in correct Z-order (background first, then controls, then labels)
@@ -351,7 +371,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         controlsContainerView.addSubview(playPauseButton)
         controlsContainerView.addSubview(rewindButton)
         controlsContainerView.addSubview(forwardButton)
-        // playerProgress moved to progressBarContainer
         controlsContainerView.addSubview(currentTimeLabel)
         controlsContainerView.addSubview(totalTimeLabel)
         controlsContainerView.addSubview(settingsButton)
@@ -365,7 +384,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          // Add speed indicator overlays last so they appear on top
          addSubview(speedIndicatorBackgroundView)
          addSubview(speedIndicatorLabel)
-
 
         // Setup constraints using translatesAutoresizingMaskIntoConstraints = false
         speedIndicatorLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -386,8 +404,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         progressBarContainer.translatesAutoresizingMaskIntoConstraints = false
         airplayButton.translatesAutoresizingMaskIntoConstraints = false // Ensure this is set
 
-
-        // Activate constraints
+        // Activate constraints (Same as before, just ensure all elements are included)
         NSLayoutConstraint.activate([
             // Speed Indicator Constraints
              speedIndicatorBackgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -459,7 +476,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
             // Time Labels Constraints
             currentTimeLabel.leadingAnchor.constraint(equalTo: progressBarContainer.leadingAnchor), // Align with progress bar container edge
-             currentTimeLabel.bottomAnchor.constraint(equalTo: controlsContainerView.bottomAnchor, constant: -15), // Padding from bottom
+             currentTimeLabel.bottomAnchor.constraint(equalTo: controlsContainerView.safeAreaLayoutGuide.bottomAnchor, constant: -15), // Adjusted to safe area
 
             totalTimeLabel.trailingAnchor.constraint(equalTo: progressBarContainer.trailingAnchor), // Align with progress bar container edge
             totalTimeLabel.bottomAnchor.constraint(equalTo: currentTimeLabel.bottomAnchor), // Align baseline with current time
@@ -486,8 +503,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             // Subtitles Label Constraints
             subtitlesLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             subtitlesLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -45), // Position above bottom controls
-            subtitlesLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor), // Align with progress bar edges
-            subtitlesLabel.trailingAnchor.constraint(equalTo: playerProgress.trailingAnchor) // Align with progress bar edges
+            subtitlesLabel.leadingAnchor.constraint(equalTo: progressBarContainer.leadingAnchor), // Align with progress bar edges
+            subtitlesLabel.trailingAnchor.constraint(equalTo: progressBarContainer.trailingAnchor) // Align with progress bar edges
         ])
 
         // Initialize seek thumb constraints (will be updated)
@@ -525,16 +542,21 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         subtitlesLabel.textColor = subtitleColor
         subtitlesLabel.layer.shadowColor = subtitleBorderColor.cgColor
         subtitlesLabel.layer.shadowRadius = subtitleBorderWidth
+        subtitlesLabel.layer.shadowOpacity = subtitleBorderWidth > 0 ? 1 : 0 // Only show shadow if width > 0
     }
+
 
     private func setupGestures() {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         tapGesture.delegate = self // Set delegate to allow specific hit testing
-        controlsContainerView.addGestureRecognizer(tapGesture) // Add to container view
+        // Add tap gesture to the main view (self) instead of controls container
+        // This allows tapping anywhere to toggle controls. Hit testing will handle control interaction.
+        self.addGestureRecognizer(tapGesture)
 
         let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
         longPressGesture.minimumPressDuration = 0.3 // Shorter duration for speed change
-        controlsContainerView.addGestureRecognizer(longPressGesture)
+        self.addGestureRecognizer(longPressGesture) // Add to main view
+        self.holdGestureRecognizer = longPressGesture // Store reference
 
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handleProgressPan(_:)))
         progressBarContainer.addGestureRecognizer(panGesture) // Add pan to the specific container
@@ -542,6 +564,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         let tap2Gesture = UITapGestureRecognizer(target: self, action: #selector(handleProgressTap(_:)))
         progressBarContainer.addGestureRecognizer(tap2Gesture) // Add tap to the specific container
     }
+
 
     // MARK: - Actions
     @objc private func airplayButtonTapped() {
@@ -571,7 +594,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          hasSentUpdate = false
          hasVotedForSkipTimes = false
          skipIntervals.removeAll()
-         removeSkipIntervalViews()
+         removeSkipButtonsAndIntervals() // Corrected function name
          subtitles.removeAll()
          subtitlesLabel.text = nil
          currentSubtitleIndex = nil
@@ -628,24 +651,26 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         } else {
             // Direct URL (MP4, etc.)
             let playerItem = AVPlayerItem(url: url)
-            player?.replaceCurrentItem(with: playerItem)
+             player?.replaceCurrentItem(with: playerItem)
             qualities.removeAll() // Clear old qualities
              currentQualityIndex = 0 // Reset quality index
             updateSettingsMenu() // Update menu for non-m3u8
 
+             // Add KVO observer *after* replacing the item
+             playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new, .initial], context: nil)
+
             if lastPlayedTime > 0 {
-                 // Observe status to seek only when ready
-                 playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new, .initial], context: nil)
+                 // Don't seek immediately, wait for .readyToPlay status in KVO
+                 objc_setAssociatedObject(playerItem, "seekTime", lastPlayedTime, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
              } else {
-                  isSeekingAllowed = true // Allow seeking immediately if not seeking
+                  isSeekingAllowed = false // Disallow seeking until ready
               }
+              objc_setAssociatedObject(playerItem, "wasPlaying", true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) // Assume we want to play
         }
 
         // Load subtitles if URL is provided
         if let subtitlesURL = subtitlesURL {
             loadSubtitles(from: subtitlesURL)
-            // Start timer only after subtitles are loaded potentially
-            // subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateSubtitle), userInfo: nil, repeats: true)
             subtitlesLabel.isHidden = areSubtitlesHidden // Respect hidden setting
         } else {
             subtitles.removeAll()
@@ -660,6 +685,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         // Fetch skip times after setting up the player
          fetchAndSetupSkipTimes(title: title, episodeCell: cell)
     }
+
 
     func play() {
         player?.play()
@@ -688,19 +714,16 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
             for (index, line) in lines.enumerated() {
                 if line.contains("#EXT-X-STREAM-INF") {
-                    // Try extracting RESOLUTION first
                      var qualityName: String?
                      if let resolutionPart = line.components(separatedBy: "RESOLUTION=").last?.components(separatedBy: ",").first,
                         let height = resolutionPart.components(separatedBy: "x").last,
                         let qualityNumber = ["1080", "720", "480", "360"].first(where: { height.hasPrefix($0) }) {
                          qualityName = "\(qualityNumber)p"
                      }
-                     // Fallback to NAME if RESOLUTION not found or invalid
                       else if let namePart = line.components(separatedBy: "NAME=\"").last?.components(separatedBy: "\"").first {
                           qualityName = namePart // Use the NAME attribute directly
                       }
 
-                     // Get the filename from the next line
                       if let name = qualityName, index + 1 < lines.count {
                           let filename = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
                           if !filename.isEmpty { // Ensure filename is not empty
@@ -710,12 +733,10 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                 }
             }
 
-            // Sort qualities numerically, highest first
              parsedQualities.sort {
                  (Int($0.0.replacingOccurrences(of: "p", with: "")) ?? 0) >
                  (Int($1.0.replacingOccurrences(of: "p", with: "")) ?? 0)
              }
-
 
             DispatchQueue.main.async {
                 self?.qualities = parsedQualities
@@ -730,6 +751,10 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
               print("Error: Invalid quality index \(index)")
               return
           }
+
+         // Remove observer from the old item *before* replacing it
+         player?.currentItem?.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+
 
          currentQualityIndex = index
          let (_, filename) = qualities[index]
@@ -750,19 +775,16 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          isSeekingAllowed = false // Disallow seeking until new item is ready
          player?.replaceCurrentItem(with: playerItem)
 
-         // Observe status to handle seeking and playback state
+         // Observe status to handle seeking and playback state *after* replacing
           playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new, .initial], context: nil)
 
           // Update menu immediately to reflect selection
            updateSettingsMenu()
 
-          // Seek and resume playback *after* the item is ready (handled in observeValue)
-           // Store the state to restore after ready
+          // Store the state to restore after ready (handled in observeValue)
            objc_setAssociatedObject(playerItem, "seekTime", actualSeekTime, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
            objc_setAssociatedObject(playerItem, "wasPlaying", wasPlaying, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
      }
-
-
 
     // KVO for player item status
      override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
@@ -793,13 +815,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                    updateTimeLabels() // Update labels with new duration
                    updateSettingsMenu() // Update menu state
 
-                    // It's crucial to remove the observer *after* handling the state change
-                    // to avoid observing changes on the old item after replacement.
-                    // However, we might need to observe other properties later.
-                    // For now, removing it here if ONLY observing status. If observing more, manage removal carefully.
-                    // playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
-
-
               case .failed:
                   print("Player item failed: \(playerItem.error?.localizedDescription ?? "Unknown error")")
                    showAlert(title: "Playback Error", message: playerItem.error?.localizedDescription ?? "Could not load video.")
@@ -809,6 +824,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                   break
               }
           } else {
+               // Important: Call super if the observation isn't for playerItem.status
                super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
            }
       }
@@ -816,7 +832,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
     // MARK: - Time Observation & Progress Updates
     private func addPeriodicTimeObserver(fullURL: String, cell: EpisodeCell) {
-        // Remove existing observer first
          if let token = timeObserverToken {
              player?.removeTimeObserver(token)
              timeObserverToken = nil
@@ -827,57 +842,50 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             guard let self = self,
                   let currentItem = self.player?.currentItem,
                   currentItem.duration.seconds.isFinite,
-                  currentItem.duration.seconds > 0 else { // Check duration validity
+                  currentItem.duration.seconds > 0 else {
                       return
                   }
 
             let currentTime = time.seconds
             let duration = currentItem.duration.seconds
 
-            // Update UI progress bar and labels
-             if !self.isSeeking { // Only update if not actively seeking
-                 let progress = duration > 0 ? Float(currentTime / duration) : 0
-                 self.updateTimeLabels(progress: Double(progress)) // Update internal labels/progress
-                 self.updateProgressBarWithSkipIntervals() // Update skip visuals
-                 self.updateSeekThumbPosition(progress: CGFloat(progress)) // Update thumb position
-             }
+            if !self.isSeeking {
+                let progress = duration > 0 ? Float(currentTime / duration) : 0
+                self.updateTimeLabels(progress: Double(progress))
+                self.updateProgressBarWithSkipIntervals()
+                self.updateSeekThumbPosition(progress: CGFloat(progress))
+            }
 
+            let remainingTime = duration - currentTime
+            self.cell.updatePlaybackProgress(progress: Float(currentTime / duration), remainingTime: remainingTime)
 
-            // Update external cell progress
-             let remainingTime = duration - currentTime
-             self.cell.updatePlaybackProgress(progress: Float(currentTime / duration), remainingTime: remainingTime)
-
-            // Save progress
             UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(fullURL)")
             UserDefaults.standard.set(duration, forKey: "totalTime_\(fullURL)")
 
-            // Update Continue Watching Item
-             self.updateContinueWatchingItem(currentTime: currentTime, duration: duration, fullURL: fullURL)
-
-             // Send AniList Update if needed
-             self.sendPushUpdates(remainingTime: remainingTime, totalTime: duration, fullURL: fullURL)
+            self.updateContinueWatchingItem(currentTime: currentTime, duration: duration, fullURL: fullURL)
+            self.sendPushUpdates(remainingTime: remainingTime, totalTime: duration, fullURL: fullURL)
+            self.updateSkipButtonsVisibility() // Update skip button visibility periodically
         }
     }
 
-    // Update Continue Watching Item (from AnimeDetailsVC)
+    // Update Continue Watching Item
      private func updateContinueWatchingItem(currentTime: Double, duration: Double, fullURL: String) {
-         // Find the episode corresponding to the fullURL (assuming cell holds the current ep info)
           let episodeNumberString = self.cell.episodeNumber
           let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
 
-          guard episodeNumber != 0 else { // Ensure valid episode number
+          guard episodeNumber != 0 else {
               print("Error: Could not get valid episode number for continue watching.")
               return
           }
 
-          let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "Unknown" // Get current source
+          let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "Unknown"
 
           let continueWatchingItem = ContinueWatchingItem(
-              animeTitle: self.videoTitle, // Use title stored in player view
+              animeTitle: self.videoTitle,
               episodeTitle: "Ep. \(episodeNumber)",
               episodeNumber: episodeNumber,
-              imageURL: self.animeImage, // Use image stored in player view
-              fullURL: fullURL, // Use the correct fullURL
+              imageURL: self.animeImage,
+              fullURL: fullURL,
               lastPlayedTime: currentTime,
               totalTime: duration,
               source: selectedMediaSource
@@ -885,7 +893,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
           ContinueWatchingManager.shared.saveItem(continueWatchingItem)
       }
 
-      // Send Push Updates (from AnimeDetailsVC)
+      // Send Push Updates
       private func sendPushUpdates(remainingTime: Double, totalTime: Double, fullURL: String) {
            guard UserDefaults.standard.bool(forKey: "sendPushUpdates"),
                  totalTime > 0, remainingTime / totalTime < 0.15, !hasSentUpdate else {
@@ -900,7 +908,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                 return
             }
 
-           let cleanedTitle = cleanTitle(self.videoTitle) // Use title stored here
+           let cleanedTitle = cleanTitle(self.videoTitle)
 
            fetchAnimeID(title: cleanedTitle) { [weak self] animeID in // Use local fetchAnimeID
                guard animeID != 0 else {
@@ -972,9 +980,9 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         isControlsVisible = true
         UIView.animate(withDuration: 0.3) {
             self.controlsContainerView.alpha = 1
-            // Animate skip buttons together with controls
-             self.skipButtonsBottomConstraint?.constant = -5 // Move buttons up
-            self.view.layoutIfNeeded() // Animate constraint change
+            // Update skip buttons constraints if needed (ensure they are linked)
+            self.skipButtonsBottomConstraint?.constant = -10 // Example: move up above progress
+            self.layoutIfNeeded() // Use self.layoutIfNeeded() for UIView subclass
         }
         resetHideControlsTimer()
     }
@@ -984,12 +992,13 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             isControlsVisible = false
             UIView.animate(withDuration: 0.3) {
                 self.controlsContainerView.alpha = 0
-                // Animate skip buttons down when controls hide
-                 self.skipButtonsBottomConstraint?.constant = 35 // Move buttons off-screen slightly
-                 self.view.layoutIfNeeded()
+                // Update skip buttons constraints if needed
+                self.skipButtonsBottomConstraint?.constant = 35 // Example: move down
+                self.layoutIfNeeded() // Use self.layoutIfNeeded()
             }
         }
     }
+
 
     private func resetHideControlsTimer() {
         hideControlsTimer?.invalidate()
@@ -1019,33 +1028,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         resetHideControlsTimer()
     }
 
-    // speedButtonTapped removed as it's handled by showsMenuAsPrimaryAction
-
-    @objc private func dismissButtonTapped() {
-         // Restore brightness before dismissing if needed
-          if isFullBrightness {
-               UIScreen.main.brightness = originalBrightness
-           }
-          hasSentUpdate = false // Allow potential update on next play
-         findViewController()?.dismiss(animated: true, completion: nil)
-     }
-
-
-    @objc private func pipButtonTapped() {
-        if let pipController = pipController {
-            if pipController.isPictureInPictureActive {
-                pipController.stopPictureInPicture()
-            } else {
-                 // Check if PiP is possible before starting
-                 if pipController.isPictureInPicturePossible {
-                      pipController.startPictureInPicture()
-                  } else {
-                       print("Picture in Picture is not possible at this moment.")
-                       showAlert(title: "PiP Not Available", message: "Picture in Picture cannot be started right now.")
-                   }
-            }
-        }
-    }
 
     // MARK: - Gesture Handling
     @objc private func handleTap() {
@@ -1068,8 +1050,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             break
         }
          updateSpeedMenu() // Refresh menu state after any change
+         resetHideControlsTimer() // Keep controls visible after interaction
     }
-
 
     @objc private func handleProgressPan(_ gesture: UIPanGestureRecognizer) {
         guard isSeekingAllowed else { return } // Prevent seeking if not ready
@@ -1083,12 +1065,11 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             isSeeking = true
             showSeekThumb() // Show thumb when seeking starts
             updateSeekThumbPosition(progress: CGFloat(progress))
+            updateTimeLabels(progress: Double(progress)) // Update labels while scrubbing
         case .changed:
             updateSeekThumbPosition(progress: CGFloat(progress))
             // Update time labels immediately as user scrubs
              updateTimeLabels(progress: Double(progress))
-              // Optional: Seek immediately on change for smoother scrubbing, but can be resource-intensive
-             // seek(to: Double(progress))
         case .ended:
             isSeeking = false
             hideSeekThumb() // Hide thumb when seeking ends
@@ -1120,11 +1101,11 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
           if animated {
               UIView.animate(withDuration: 0.2) {
                   self.seekThumb.alpha = 1
-                  self.layoutIfNeeded()
+                  self.layoutIfNeeded() // Use self.layoutIfNeeded()
               }
           } else {
                self.seekThumb.alpha = 1
-               self.layoutIfNeeded()
+               self.layoutIfNeeded() // Use self.layoutIfNeeded()
            }
       }
 
@@ -1133,11 +1114,11 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
            if animated {
                UIView.animate(withDuration: 0.2) {
                    self.seekThumb.alpha = 0
-                   self.layoutIfNeeded()
+                   self.layoutIfNeeded() // Use self.layoutIfNeeded()
                }
            } else {
                 self.seekThumb.alpha = 0
-                self.layoutIfNeeded()
+                self.layoutIfNeeded() // Use self.layoutIfNeeded()
             }
        }
 
@@ -1148,7 +1129,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          seekThumbCenterXConstraint?.constant = thumbCenterX
          // Animate the constraint change for smoother movement
           UIView.animate(withDuration: 0.05) { // Short duration for smooth tracking
-              self.layoutIfNeeded()
+              self.layoutIfNeeded() // Use self.layoutIfNeeded()
           }
      }
 
@@ -1157,31 +1138,28 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
           let seekTimeSeconds = progress * CMTimeGetSeconds(duration)
           let seekTime = CMTime(seconds: seekTimeSeconds, preferredTimescale: 1)
           print("Seeking to: \(seekTimeSeconds)s (\(progress * 100)%)")
-          player?.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+          player?.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { finished in // Removed [weak self] as not needed here
                if finished {
                     print("Seek finished.")
-                     // Update UI immediately after seek completion if needed
-                     // self?.updateTimeLabels() // Already updated periodically
                  } else {
                       print("Seek cancelled or interrupted.")
                   }
               }
       }
 
-
     // MARK: - Menu Updates
     private func updateSpeedMenu() {
         let speedOptions: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-         // Use the player's actual rate unless it's the hold speed rate
-         let currentRate = (player?.rate == UserDefaults.standard.float(forKey: "holdSpeedPlayer") && holdGesture?.state == .began) ? 1.0 : (player?.rate ?? 1.0) // Default to 1.0 if hold active
+        // Check hold gesture state correctly using the stored recognizer
+        let currentRate = (player?.rate == UserDefaults.standard.float(forKey: "holdSpeedPlayer") && holdGestureRecognizer?.state == .began) ? 1.0 : (player?.rate ?? 1.0) // Default to 1.0 if hold active
 
         let speedMenuItems = speedOptions.map { speed in
-            UIAction(title: "\(speed)x", state: (abs(currentRate - speed) < 0.01) ? .on : .off) { [weak self] _ in // Use tolerance for float comparison
+            UIAction(title: "\(speed)x", state: (abs(currentRate - speed) < 0.01) ? .on : .off) { [weak self] _ in
                 self?.player?.rate = speed
-                 UserDefaults.standard.set(speed, forKey: "playerSpeed") // Save selected speed
+                UserDefaults.standard.set(speed, forKey: "playerSpeed")
                 self?.updateSpeedIndicator(speed: speed)
-                self?.updateSpeedMenu() // Refresh menu to show new selection
-                 self?.resetHideControlsTimer() // Keep controls visible after selection
+                self?.updateSpeedMenu()
+                self?.resetHideControlsTimer()
             }
         }
 
@@ -1200,12 +1178,12 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                      self?.resetHideControlsTimer()
                  }
              }
-             let qualitySubmenu = UIMenu(title: "Quality", image: UIImage(systemName: "rectangle.3.group"), children: qualityItems) // Changed icon
+             let qualitySubmenu = UIMenu(title: "Quality", image: UIImage(systemName: "rectangle.3.group"), children: qualityItems)
              menuItems.append(qualitySubmenu)
          }
 
          // --- Subtitles Submenu ---
-         if !subtitles.isEmpty || subtitlesURL != nil { // Show even if only external URL exists initially
+         if !subtitles.isEmpty || subtitlesURL != nil {
              let fontSizeOptions: [CGFloat] = [14, 16, 18, 20, 22, 24]
              let fontSizeItems = fontSizeOptions.map { size in
                  UIAction(title: "\(Int(size))pt", state: subtitleFontSize == size ? .on : .off) { [weak self] _ in
@@ -1242,7 +1220,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
              }
              let borderWidthSubmenu = UIMenu(title: "Shadow Intensity", children: borderWidthItems)
 
-             let hideSubtitlesAction = UIAction(title: "Hide Subtitles", image: UIImage(systemName: areSubtitlesHidden ? "eye.slash" : "eye"), state: areSubtitlesHidden ? .on : .off) { [weak self] _ in // Added image
+             let hideSubtitlesAction = UIAction(title: "Hide Subtitles", image: UIImage(systemName: areSubtitlesHidden ? "eye.slash" : "eye"), state: areSubtitlesHidden ? .on : .off) { [weak self] _ in
                  self?.toggleSubtitles()
                  self?.saveSettings()
                   self?.resetHideControlsTimer()
@@ -1256,7 +1234,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
              }
 
              let currentLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
-              let languageOptions: [(String, String)] = [("en", "English"), ("ar", "Arabic"), ("bg", "Bulgarian"), ("cs", "Czech"), ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("es", "Spanish"), ("et", "Estonian"), ("fi", "Finnish"), ("fr", "French"), ("hu", "Hungarian"), ("id", "Indonesian"), ("it", "Italian"), ("ja", "Japanese"), ("ko", "Korean"), ("lt", "Lithuanian"), ("lv", "Latvian"), ("nl", "Dutch"), ("pl", "Polish"), ("pt", "Portuguese"), ("ro", "Romanian"), ("ru", "Russian"), ("sk", "Slovak"), ("sl", "Slovenian"), ("sv", "Swedish"), ("tr", "Turkish"), ("uk", "Ukrainian")] // Added English
+             let languageOptions: [(String, String)] = [("en", "English"), ("ar", "Arabic"), ("bg", "Bulgarian"), ("cs", "Czech"), ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("es", "Spanish"), ("et", "Estonian"), ("fi", "Finnish"), ("fr", "French"), ("hu", "Hungarian"), ("id", "Indonesian"), ("it", "Italian"), ("ja", "Japanese"), ("ko", "Korean"), ("lt", "Lithuanian"), ("lv", "Latvian"), ("nl", "Dutch"), ("pl", "Polish"), ("pt", "Portuguese"), ("ro", "Romanian"), ("ru", "Russian"), ("sk", "Slovak"), ("sl", "Slovenian"), ("sv", "Swedish"), ("tr", "Turkish"), ("uk", "Ukrainian")]
 
              let languageItems = languageOptions.map { (code, name) in
                  UIAction(title: name, state: currentLanguage == code ? .on : .off) { _ in
@@ -1268,17 +1246,15 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
              }
              let languageSubmenu = UIMenu(title: "Translation Language", children: languageItems)
 
-             // Only show translation options if enabled
               var subtitleChildren: [UIMenuElement] = [hideSubtitlesAction, fontSizeSubmenu, colorSubmenu, borderWidthSubmenu]
-              if UserDefaults.standard.bool(forKey: "googleTranslationEnabledMain") { // Check main toggle
+              if UserDefaults.standard.bool(forKey: "googleTranslationEnabledMain") {
                   subtitleChildren.append(subtitlesTranslationAction)
-                   if isGoogleTranslateEnabled { // Only show language if translation is active
+                   if isGoogleTranslateEnabled {
                        subtitleChildren.append(languageSubmenu)
                    }
                }
 
-
-             let subtitleSettingsSubmenu = UIMenu(title: "Subtitles", image: UIImage(systemName: "captions.bubble"), children: subtitleChildren) // Changed title
+             let subtitleSettingsSubmenu = UIMenu(title: "Subtitles", image: UIImage(systemName: "captions.bubble"), children: subtitleChildren)
              menuItems.append(subtitleSettingsSubmenu)
          }
 
@@ -1293,7 +1269,7 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                   self?.resetHideControlsTimer()
              }
          }
-         let aspectRatioSubmenu = UIMenu(title: "Aspect Ratio", image: UIImage(systemName: "aspectratio"), children: aspectRatioItems) // Changed icon
+         let aspectRatioSubmenu = UIMenu(title: "Aspect Ratio", image: UIImage(systemName: "aspectratio"), children: aspectRatioItems)
          menuItems.append(aspectRatioSubmenu)
 
          // --- Full Brightness Action ---
@@ -1328,13 +1304,11 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
     }
 
      private func updateSpeedIndicator(speed: Float) {
-         // Only show indicator if speed is not 1.0
          speedIndicatorLabel.text = String(format: "%.2fx Speed", speed)
           let shouldHide = abs(speed - 1.0) < 0.01 // Hide if speed is effectively 1.0
           speedIndicatorLabel.isHidden = shouldHide
           speedIndicatorBackgroundView.isHidden = shouldHide
 
-          // Fade in/out animation
            UIView.animate(withDuration: 0.3) {
                 self.speedIndicatorLabel.alpha = shouldHide ? 0 : 1
                 self.speedIndicatorBackgroundView.alpha = shouldHide ? 0 : 1
@@ -1344,7 +1318,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
     // MARK: - Playback End & Dismissal
     @objc private func playerItemDidReachEnd(notification: Notification) {
-         // Ensure the notification is for the currently playing item
           guard let playerItem = notification.object as? AVPlayerItem,
                 playerItem == player?.currentItem else {
                     return
@@ -1371,39 +1344,30 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
          // Handle autoplay
          if UserDefaults.standard.bool(forKey: "AutoPlay") {
-              // Need a way to trigger the next episode from AnimeDetailViewController
-              // This requires communication back (e.g., delegate or notification)
               print("Autoplay triggered (needs implementation to call next episode)")
-               // Example using a delegate (assuming CustomPlayerView has one)
-               // delegate?.customPlayerDidFinishPlaying()
                 // For now, just dismiss
-                dismissPlayer()
+                dismissPlayerView() // Changed to call the correct dismiss function
 
 
           } else {
-               // If autoplay is off, maybe just stay here or offer replay?
-               // For now, let's keep it simple and potentially dismiss later if user taps close
                print("Autoplay off, playback finished.")
            }
 
     }
 
-    private func dismissPlayer() {
-         // Restore brightness before dismissing
+    // Renamed dismiss function
+    @objc private func dismissPlayerView() {
           if isFullBrightness {
                UIScreen.main.brightness = originalBrightness
                isFullBrightness = false
            }
-          hasSentUpdate = false // Reset update flag for next potential play
+          hasSentUpdate = false
          findViewController()?.dismiss(animated: true, completion: nil)
      }
 
-    @objc private func dismissButtonTapped() {
-         dismissPlayer()
-     }
-
     // MARK: - PiP Delegate Methods
-    @objc private func pipButtonTapped() {
+    // Renamed PiP toggle function
+    @objc private func togglePictureInPicture() {
         if let pipController = pipController {
             if pipController.isPictureInPictureActive {
                 pipController.stopPictureInPicture()
@@ -1418,10 +1382,9 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         }
     }
 
+
     func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
          print("PiP Will Start")
-         // Optionally hide custom controls when PiP starts
-          // UIView.animate(withDuration: 0.1) { self.controlsContainerView.alpha = 0 }
       }
 
       func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -1439,12 +1402,9 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
        func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
            print("PiP Did Stop")
-           // Optionally show custom controls again when PiP stops
-            // showControls()
        }
 
        func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
-            // Re-present the view controller containing the player if it was dismissed for PiP
             if let presentingVC = findViewController()?.presentingViewController {
                  presentingVC.present(findViewController()!, animated: true) {
                      completionHandler(true)
@@ -1463,19 +1423,16 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                   return
               }
 
-              // Detect format and parse
               SubtitlesLoader.parseSubtitles(data: data) { [weak self] cues in
                    DispatchQueue.main.async {
                        print("Loaded \(cues.count) subtitle cues.")
                        self?.subtitles = cues
-                       // Start the timer only after subtitles are successfully loaded
                         self?.subtitleTimer?.invalidate() // Invalidate previous timer if any
-                        self?.subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(self.updateSubtitle), userInfo: nil, repeats: true)
+                        self?.subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(self?.updateSubtitle), userInfo: nil, repeats: true) // Corrected selector
                    }
                }
          }.resume()
      }
-
 
     @objc private func updateSubtitle() {
          guard !areSubtitlesHidden, let player = player, !subtitles.isEmpty else {
@@ -1489,7 +1446,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
          let isTranslationEnabled = UserDefaults.standard.bool(forKey: "googleTranslation")
          let currentTranslationLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
 
-         // Efficiently find the current cue
           var foundCue: SubtitleCue? = nil
           if let currentIndex = currentSubtitleIndex,
              currentIndex < subtitles.count,
@@ -1497,7 +1453,6 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
              CMTimeCompare(currentTime, subtitles[currentIndex].endTime) <= 0 {
               foundCue = subtitles[currentIndex]
           } else {
-               // Search if current index is invalid or time is outside its range
                if let newIndex = subtitles.firstIndex(where: { CMTimeCompare(currentTime, $0.startTime) >= 0 && CMTimeCompare(currentTime, $0.endTime) <= 0 }) {
                     foundCue = subtitles[newIndex]
                     currentSubtitleIndex = newIndex
@@ -1508,39 +1463,30 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 
 
          if let cue = foundCue {
-             // Check if translation is needed or language changed
              if isTranslationEnabled {
                  if cue.getTranslation(for: currentTranslationLanguage) != nil && lastTranslationLanguage == currentTranslationLanguage {
-                      // Use cached translation
                       subtitlesLabel.text = cue.getTranslation(for: currentTranslationLanguage)
                   } else {
-                       // Need to translate
-                       lastTranslationLanguage = currentTranslationLanguage // Update last language attempted
+                       lastTranslationLanguage = currentTranslationLanguage
                        translateAndDisplaySubtitle(cue: cue, targetLanguage: currentTranslationLanguage)
                    }
              } else {
-                 // Translation disabled, show original
                  subtitlesLabel.text = cue.originalText
              }
          } else {
-             // No cue active, clear the label
              subtitlesLabel.text = nil
          }
      }
 
      private func translateAndDisplaySubtitle(cue: SubtitleCue, targetLanguage: String) {
-         // Show original text while translating
          subtitlesLabel.text = cue.originalText
 
-         // Find the index of the current cue to update it later
          guard let cueIndex = subtitles.firstIndex(where: { $0.startTime == cue.startTime && $0.endTime == cue.endTime }) else { return }
 
          SubtitlesLoader.getTranslatedSubtitle(cue) { [weak self] translatedCue in
               guard let self = self else { return }
-              // Update the subtitles array with the new translation
                self.subtitles[cueIndex] = translatedCue
 
-               // Check if this cue is *still* the current one before displaying translation
                if self.currentSubtitleIndex == cueIndex {
                     DispatchQueue.main.async {
                          self.subtitlesLabel.text = translatedCue.getTranslation(for: targetLanguage) ?? translatedCue.originalText
@@ -1561,22 +1507,17 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                   metadata.setString("Episode \(episodeNumber)", forKey: kGCKMetadataKeyTitle)
               }
 
-             if UserDefaults.standard.bool(forKey: "animeImageCast"), let imageURL = URL(string: self.animeImage) { // Use stored image URL
+             if UserDefaults.standard.bool(forKey: "animeImageCast"), let imageURL = URL(string: self.animeImage) {
                  metadata.addImage(GCKImage(url: imageURL, width: 480, height: 720))
              }
 
              let builder = GCKMediaInformationBuilder(contentURL: videoURL)
 
-             // Determine content type based on URL extension
               let contentType: String
               let urlString = videoURL.absoluteString.lowercased()
-              if urlString.hasSuffix(".m3u8") {
-                  contentType = "application/x-mpegurl"
-              } else if urlString.hasSuffix(".mp4") {
-                  contentType = "video/mp4"
-              } else {
-                   contentType = "video/mp4" // Default guess
-               }
+              if urlString.hasSuffix(".m3u8") { contentType = "application/x-mpegurl" }
+              else if urlString.hasSuffix(".mp4") { contentType = "video/mp4" }
+              else { contentType = "video/mp4" }
               builder.contentType = contentType
              builder.metadata = metadata
 
@@ -1602,12 +1543,8 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
       func remoteMediaClient(_ client: GCKRemoteMediaClient, didUpdate mediaStatus: GCKMediaStatus?) {
           if let mediaStatus = mediaStatus, mediaStatus.idleReason == .finished {
                print("Cast media finished playing.")
-               // Handle end of playback on Cast device (e.g., autoplay next)
                 if UserDefaults.standard.bool(forKey: "AutoPlay") {
                      print("Cast Autoplay triggered (needs implementation)")
-                      // You might need a delegate or notification to tell AnimeDetailViewController to play next
-                       // For now, perhaps just dismiss this player view if it's somehow still open
-                        // findViewController()?.dismiss(animated: true, completion: nil)
                  }
            }
        }
@@ -1616,23 +1553,26 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
 // MARK: - Gesture Recognizer Delegate
  extension CustomVideoPlayerView: UIGestureRecognizerDelegate {
      func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-         // Allow tap gesture only if the touch is not on specific controls (like buttons or slider)
-         if gestureRecognizer is UITapGestureRecognizer {
-              let location = touch.location(in: controlsContainerView)
-              // Check if touch is outside interactive elements within the controls container
+          // Allow tap gesture only if the touch is not on specific controls or the progress bar
+          if gestureRecognizer is UITapGestureRecognizer {
+               let locationInControls = touch.location(in: controlsContainerView)
                let isTouchOnControl = controlsContainerView.subviews.contains { subview in
-                   subview.frame.contains(location) && subview.isUserInteractionEnabled && subview is UIControl // Check if it's a UIControl
+                   // Check visibility and interaction, and whether it's a UIControl or specific UIImageViews
+                   !subview.isHidden && subview.alpha > 0 && subview.isUserInteractionEnabled &&
+                   subview.frame.contains(locationInControls) &&
+                   (subview is UIControl || subview == playPauseButton || subview == rewindButton || subview == forwardButton || subview == dismissButton || subview == pipButton || subview is AVRoutePickerView)
                }
-              let isTouchOnProgressBar = progressBarContainer.frame.contains(touch.location(in: self))
+               let locationInSelf = touch.location(in: self)
+               let isTouchOnProgressBar = progressBarContainer.frame.contains(locationInSelf)
 
-              // Allow tap if it's *not* on a control and *not* on the progress bar area
-              return !isTouchOnControl && !isTouchOnProgressBar
-          }
-         return true // Allow other gestures (like long press)
-     }
+               // Allow tap if NOT on a control AND NOT on the progress bar
+               return !isTouchOnControl && !isTouchOnProgressBar
+           }
+          return true // Allow other gestures (like long press)
+      }
  }
 
-// MARK: - Skip Time Handling (Moved from CustomPlayerView)
+// MARK: - Skip Time Handling
 extension CustomVideoPlayerView {
     private func fetchAndSetupSkipTimes(title: String, episodeCell: EpisodeCell) {
         let cleanedTitle = cleanTitle(title)
@@ -1644,9 +1584,8 @@ extension CustomVideoPlayerView {
              return
          }
 
-
         fetchAnimeID(title: cleanedTitle) { [weak self] anilistID in
-             guard anilistID != 0 else { // Check for valid ID
+             guard anilistID != 0 else {
                  print("Could not get AniList ID for skip times.")
                  return
              }
@@ -1658,9 +1597,9 @@ extension CustomVideoPlayerView {
                  self?.fetchSkipTimes(malID: malID, episodeNumber: episodeNumber) { skipTimes in
                      DispatchQueue.main.async {
                          self?.skipIntervals = skipTimes
-                         self?.updateSkipButtons() // Create buttons based on fetched times
-                         self?.updateProgressBarWithSkipIntervals() // Draw skip sections on progress bar
-                         self?.setupSkipButtonUpdates() // Start timer to show/hide buttons
+                         self?.updateSkipButtons()
+                         self?.updateProgressBarWithSkipIntervals()
+                         self?.setupSkipButtonUpdates()
                      }
                  }
              }
@@ -1668,20 +1607,18 @@ extension CustomVideoPlayerView {
     }
 
      func fetchAnimeID(title: String, completion: @escaping (Int) -> Void) {
-          // Prioritize custom ID if set
            if let customIDString = UserDefaults.standard.string(forKey: "customAniListID_\(title)"),
               let customID = Int(customIDString) {
                completion(customID)
                return
            }
-           // Fallback to API search
           AnimeService.fetchAnimeID(byTitle: title) { result in
               switch result {
               case .success(let id):
                   completion(id)
               case .failure(let error):
                   print("Error fetching anime ID for skip times: \(error.localizedDescription)")
-                   completion(0) // Indicate failure
+                   completion(0)
               }
           }
       }
@@ -1714,7 +1651,7 @@ extension CustomVideoPlayerView {
          }.resume()
      }
 
-    func fetchSkipTimes(malID: Int, episodeNumber: Int, completion: @escaping ([(type: String, start: TimeInterval, end: TimeInterval, id: String)]) -> Void) { // Added 'id'
+    func fetchSkipTimes(malID: Int, episodeNumber: Int, completion: @escaping ([(type: String, start: TimeInterval, end: TimeInterval, id: String)]) -> Void) {
         let savedAniSkipInstance = UserDefaults.standard.string(forKey: "savedAniSkipInstance") ?? ""
         let baseURL = savedAniSkipInstance.isEmpty ? "https://api.aniskip.com/" : savedAniSkipInstance
         let endpoint = "v1/skip-times/\(malID)/\(episodeNumber)?types=op&types=ed&episodeLength=0" // Add episodeLength=0
@@ -1731,24 +1668,22 @@ extension CustomVideoPlayerView {
 
             do {
                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                    // Check for "found" key first
                      if let found = json["found"] as? Bool, !found {
                           print("No skip times found for MAL ID \(malID), Episode \(episodeNumber)")
                           completion([])
                           return
                       }
 
-                     // Proceed if "found" is true or not present (older API versions?)
                       if let results = json["results"] as? [[String: Any]] {
                          let skipTimes = results.compactMap { result -> (type: String, start: TimeInterval, end: TimeInterval, id: String)? in
                              guard let interval = result["interval"] as? [String: Double],
                                    let startTime = interval["start_time"],
                                    let endTime = interval["end_time"],
                                    let skipType = result["skip_type"] as? String,
-                                   let skipId = result["skip_id"] as? String else { // Extract skip_id
+                                   let skipId = result["skip_id"] as? String else {
                                        return nil
                                    }
-                             return (type: skipType, start: startTime, end: endTime, id: skipId) // Include id
+                             return (type: skipType, start: startTime, end: endTime, id: skipId)
                          }
                          completion(skipTimes)
                       } else {
@@ -1766,65 +1701,69 @@ extension CustomVideoPlayerView {
         }.resume()
     }
 
-
     private func updateSkipButtons() {
-        // Remove existing buttons and interval views first
-         removeSkipButtonsAndIntervals()
+        removeSkipButtonsAndIntervals() // Use corrected name
 
         guard let duration = player?.currentItem?.duration.seconds, duration > 0 else { return }
 
+        // Create a single constraint for the bottom of the button group
+         var bottomAnchorConstraint: NSLayoutYAxisAnchor = progressBarContainer.topAnchor
+         var bottomConstant: CGFloat = -10 // Default spacing above progress bar
+
         for (index, interval) in skipIntervals.enumerated() {
-            // --- Create Skip Button ---
             let button = UIButton(type: .system)
-            let title = interval.type == "op" ? " Skip Intro" : " Skip Outro" // Add space for icon
+            let title = interval.type == "op" ? " Skip Intro" : " Skip Outro"
             let icon = UIImage(systemName: "forward.fill")
 
             button.setImage(icon, for: .normal)
             button.setTitle(title, for: .normal)
-            button.tintColor = .black // Icon color
-            button.setTitleColor(.black, for: .normal) // Text color
-            button.backgroundColor = UIColor.white.withAlphaComponent(0.9) // Slightly transparent white
-            button.layer.cornerRadius = 18 // More rounded
+            button.tintColor = .black
+            button.setTitleColor(.black, for: .normal)
+            button.backgroundColor = UIColor.white.withAlphaComponent(0.9)
+            button.layer.cornerRadius = 18
             button.layer.masksToBounds = true
-            button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium) // Adjusted font
-            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -5, bottom: 0, right: 5) // Adjust icon position
-            button.titleEdgeInsets = UIEdgeInsets(top: 0, left: 5, bottom: 0, right: -5) // Adjust text position
-            button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 15, bottom: 5, right: 15) // Add padding
-            button.sizeToFit() // Adjust size to content
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -5, bottom: 0, right: 5)
+            button.titleEdgeInsets = UIEdgeInsets(top: 0, left: 5, bottom: 0, right: -5)
+            button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 15, bottom: 5, right: 15)
+            // button.sizeToFit() // Don't use sizeToFit with constraints
 
-            button.tag = index // Store index to identify which interval to skip
+            button.tag = index
             button.addTarget(self, action: #selector(skipButtonTapped(_:)), for: .touchUpInside)
-            button.alpha = 0 // Initially hidden
-            button.isHidden = true // Start hidden
+            button.alpha = 0
+            button.isHidden = true
 
-            controlsContainerView.addSubview(button) // Add to controls container
+            controlsContainerView.addSubview(button)
             skipButtons.append(button)
             button.translatesAutoresizingMaskIntoConstraints = false
 
              // --- Position Skip Button ---
              NSLayoutConstraint.activate([
-                  button.trailingAnchor.constraint(equalTo: settingsButton.trailingAnchor), // Align with settings button
-                  button.bottomAnchor.constraint(equalTo: progressBarContainer.topAnchor, constant: -10) // Position above progress bar
+                  button.trailingAnchor.constraint(equalTo: settingsButton.trailingAnchor), // Align right edge
+                  button.bottomAnchor.constraint(equalTo: bottomAnchorConstraint, constant: -bottomConstant) // Chain bottom anchors
               ])
 
+             // Update for the next button's bottom constraint
+              bottomAnchorConstraint = button.topAnchor
+              bottomConstant = 5 // Spacing between skip buttons
 
              // --- Create Skip Interval View on Progress Bar ---
               let startPercentage = CGFloat(interval.start / duration)
               let endPercentage = CGFloat(interval.end / duration)
-              guard startPercentage < 1.0, endPercentage > startPercentage else { continue } // Ensure valid range
+              guard startPercentage < 1.0, endPercentage > startPercentage else { continue }
 
               let skipView = UIView()
-               skipView.backgroundColor = interval.type == "op" ? .systemOrange.withAlphaComponent(0.6) : .systemPurple.withAlphaComponent(0.6) // Different colors
-               skipView.layer.cornerRadius = playerProgress.frame.height / 2 // Rounded ends
+               skipView.backgroundColor = interval.type == "op" ? .systemOrange.withAlphaComponent(0.6) : .systemPurple.withAlphaComponent(0.6)
+               skipView.layer.cornerRadius = playerProgress.frame.height / 2
                skipView.layer.masksToBounds = true
-               skipView.isUserInteractionEnabled = false // Don't interfere with seeking
+               skipView.isUserInteractionEnabled = false
 
-               playerProgress.addSubview(skipView) // Add directly to progress view
+               playerProgress.addSubview(skipView)
                skipIntervalViews.append(skipView)
                skipView.translatesAutoresizingMaskIntoConstraints = false
 
                let leadingConstraint = skipView.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor, constant: playerProgress.bounds.width * startPercentage)
-               let widthConstraint = skipView.widthAnchor.constraint(equalToConstant: max(1, playerProgress.bounds.width * (endPercentage - startPercentage))) // Ensure minimum width
+               let widthConstraint = skipView.widthAnchor.constraint(equalToConstant: max(1, playerProgress.bounds.width * (endPercentage - startPercentage)))
 
                NSLayoutConstraint.activate([
                    leadingConstraint,
@@ -1835,6 +1774,7 @@ extension CustomVideoPlayerView {
         }
     }
 
+    // Corrected function name
     private func removeSkipButtonsAndIntervals() {
          for button in skipButtons { button.removeFromSuperview() }
          skipButtons.removeAll()
@@ -1844,17 +1784,14 @@ extension CustomVideoPlayerView {
 
 
      private func updateProgressBarWithSkipIntervals() {
-          // This function now only needs to update the *positions* of existing skip interval views
-          // as the progress bar's layout changes (e.g., on rotation).
           guard let duration = player?.currentItem?.duration.seconds, duration > 0 else { return }
 
           for (index, view) in skipIntervalViews.enumerated() {
-              guard index < skipIntervals.count else { continue } // Safety check
+              guard index < skipIntervals.count else { continue }
               let interval = skipIntervals[index]
               let startPercentage = CGFloat(interval.start / duration)
               let endPercentage = CGFloat(interval.end / duration)
 
-               // Update constraints
                if let leadingConstraint = view.constraints.first(where: { $0.firstAttribute == .leading }) {
                     leadingConstraint.constant = playerProgress.bounds.width * startPercentage
                 }
@@ -1862,34 +1799,32 @@ extension CustomVideoPlayerView {
                      widthConstraint.constant = max(1, playerProgress.bounds.width * (endPercentage - startPercentage))
                  }
           }
-          // Trigger layout update if needed, though usually happens automatically
-           // playerProgress.layoutIfNeeded()
+          // Use self.layoutIfNeeded() as this is a UIView subclass
+          self.playerProgress.layoutIfNeeded()
       }
 
 
     private func setupSkipButtonUpdates() {
-        // Use the existing periodic time observer to update visibility
-        // No need for a separate timer
+        // The periodic time observer already handles visibility updates
     }
 
-    @objc private func updateSkipButtonsVisibility() {
+    private func updateSkipButtonsVisibility() { // Renamed from @objc version
         guard let currentTime = player?.currentTime().seconds else { return }
 
         for (index, interval) in skipIntervals.enumerated() {
-            guard index < skipButtons.count else { continue } // Safety check
+            guard index < skipButtons.count else { continue }
             let button = skipButtons[index]
-            let isWithinInterval = currentTime >= interval.start && currentTime < interval.end // Show button *within* the interval
+            let isWithinInterval = currentTime >= interval.start && currentTime < interval.end
 
-            let shouldShow = isWithinInterval && isControlsVisible // Only show if controls are visible AND within time
+            let shouldShow = isWithinInterval && isControlsVisible
 
-            if button.isHidden == !shouldShow { // Only animate if state changes
+            if button.isHidden == !shouldShow {
                 UIView.animate(withDuration: 0.3) {
                      button.alpha = shouldShow ? 1 : 0
                      button.isHidden = !shouldShow
                  }
              }
 
-             // Auto-skip logic
              if isWithinInterval {
                  let autoSkipEnabled: Bool
                  let hasSkippedFlag: Bool
@@ -1904,13 +1839,11 @@ extension CustomVideoPlayerView {
 
                  if autoSkipEnabled && !hasSkippedFlag {
                       print("Auto-skipping \(interval.type)")
-                      seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0)) // Seek to end of interval
+                      seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0))
 
-                      // Update the corresponding flag
                       if interval.type == "op" { hasSkippedIntro = true }
                       else { hasSkippedOutro = true }
 
-                      // Hide the button immediately after auto-skipping
                        UIView.animate(withDuration: 0.1) {
                            button.alpha = 0
                            button.isHidden = true
@@ -1930,22 +1863,19 @@ extension CustomVideoPlayerView {
     @objc private func skipButtonTapped(_ sender: UIButton) {
         guard sender.tag < skipIntervals.count else { return }
         let interval = skipIntervals[sender.tag]
-        seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0)) // Seek to end time
+        seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0))
 
-         // Manually hide the button after tapping
          UIView.animate(withDuration: 0.2) {
              sender.alpha = 0
          } completion: { _ in
               sender.isHidden = true
           }
 
-         // Mark as skipped to prevent auto-skip if it hasn't happened yet
          if interval.type == "op" { hasSkippedIntro = true }
          else { hasSkippedOutro = true }
 
-        resetHideControlsTimer() // Keep controls visible
+        resetHideControlsTimer()
     }
-
 
     private func showSkipVoteAlert() {
          guard !skipIntervals.isEmpty, let viewController = self.findViewController() else { return }
@@ -1962,11 +1892,10 @@ extension CustomVideoPlayerView {
 
          alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
 
-          // Configure for iPad
           if UIDevice.current.userInterfaceIdiom == .pad {
                if let popoverController = alert.popoverPresentationController {
-                   popoverController.sourceView = self // Anchor to the player view
-                   popoverController.sourceRect = CGRect(x: self.bounds.midX, y: self.bounds.midY, width: 0, height: 0) // Center
+                   popoverController.sourceView = self
+                   popoverController.sourceRect = CGRect(x: self.bounds.midX, y: self.bounds.midY, width: 0, height: 0)
                    popoverController.permittedArrowDirections = []
                }
            }
@@ -1979,13 +1908,13 @@ extension CustomVideoPlayerView {
           for interval in skipIntervals {
               sendVote(skipId: interval.id, voteType: voteType)
           }
-          hasVotedForSkipTimes = true // Mark as voted for this session
+          hasVotedForSkipTimes = true
       }
 
 
     private func sendVote(skipId: String, voteType: String) {
-        let baseURL = "https://api.aniskip.com/" // Use official API base
-        let endpoint = "v1/vote" // Use the correct vote endpoint
+        let baseURL = "https://api.aniskip.com/"
+        let endpoint = "v1/vote"
         guard let url = URL(string: "\(baseURL)\(endpoint)") else {
             print("Invalid AniSkip vote URL")
             return
@@ -1995,10 +1924,7 @@ extension CustomVideoPlayerView {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let payload: [String: String] = [
-            "skip_id": skipId,
-            "vote_type": voteType
-        ]
+        let payload: [String: String] = [ "skip_id": skipId, "vote_type": voteType ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         URLSession.shared.dataTask(with: request) { data, response, error in
@@ -2009,7 +1935,6 @@ extension CustomVideoPlayerView {
                      print("Vote (\(voteType)) sent successfully for \(skipId)")
                  } else {
                       print("Unexpected response code (\(httpResponse.statusCode)) when voting for \(skipId)")
-                      // Optionally parse response body for more details if available
                        if let responseData = data, let responseString = String(data: responseData, encoding: .utf8) {
                             print("Server response: \(responseString)")
                         }
@@ -2023,24 +1948,19 @@ extension CustomVideoPlayerView {
     // MARK: - Settings Persistence
     func saveSettings() {
         let defaults = UserDefaults.standard
-        // Save subtitle settings
         defaults.set(subtitleFontSize, forKey: SettingsKeys.subtitleFontSize)
         if let colorData = try? NSKeyedArchiver.archivedData(withRootObject: subtitleColor, requiringSecureCoding: true) {
             defaults.set(colorData, forKey: SettingsKeys.subtitleColor)
         }
         defaults.set(subtitleBorderWidth, forKey: SettingsKeys.subtitleBorderWidth)
         defaults.set(areSubtitlesHidden, forKey: SettingsKeys.subtitlesHidden)
-        // Save aspect ratio
         defaults.set(playerLayer?.videoGravity == .resizeAspect, forKey: SettingsKeys.aspectRatioFit)
-        // Save brightness state
         defaults.set(isFullBrightness, forKey: SettingsKeys.fullBrightness)
-         // Save selected player speed
-          defaults.set(player?.rate ?? 1.0, forKey: "playerSpeed") // Save current rate
+        defaults.set(player?.rate ?? 1.0, forKey: "playerSpeed")
     }
 
     func loadSettings() {
         let defaults = UserDefaults.standard
-        // Load subtitle settings
         subtitleFontSize = defaults.object(forKey: SettingsKeys.subtitleFontSize) as? CGFloat ?? 16
         if let colorData = defaults.data(forKey: SettingsKeys.subtitleColor),
            let color = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: colorData) {
@@ -2048,27 +1968,22 @@ extension CustomVideoPlayerView {
         } else { subtitleColor = .white }
         subtitleBorderWidth = defaults.object(forKey: SettingsKeys.subtitleBorderWidth) as? CGFloat ?? 1
         areSubtitlesHidden = defaults.bool(forKey: SettingsKeys.subtitlesHidden)
-        // Load aspect ratio
         let isFitMode = defaults.bool(forKey: SettingsKeys.aspectRatioFit)
         playerLayer?.videoGravity = isFitMode ? .resizeAspect : .resizeAspectFill
-        // Load brightness state
         isFullBrightness = defaults.bool(forKey: SettingsKeys.fullBrightness)
-         // Load player speed
-          let savedSpeed = defaults.float(forKey: "playerSpeed")
-          player?.rate = savedSpeed > 0 ? savedSpeed : 1.0 // Apply saved speed, default to 1.0
+        let savedSpeed = defaults.float(forKey: "playerSpeed")
+        player?.rate = savedSpeed > 0 ? savedSpeed : 1.0
 
-        updateSubtitleAppearance() // Apply loaded settings to UI
-        subtitlesLabel.isHidden = areSubtitlesHidden // Ensure hidden state is correct
-        // Apply brightness immediately if loaded state is true
+        updateSubtitleAppearance()
+        subtitlesLabel.isHidden = areSubtitlesHidden
          if isFullBrightness {
-              originalBrightness = UIScreen.main.brightness // Store current *before* applying full
+              originalBrightness = UIScreen.main.brightness
               UIScreen.main.brightness = 1.0
           }
-         updateSpeedMenu() // Update speed menu based on loaded rate
-         updateSettingsMenu() // Update settings menu state
+         updateSpeedMenu()
+         updateSettingsMenu()
      }
 
-     // cleanTitle (from AnimeDetailsVC)
       func cleanTitle(_ title: String) -> String {
           let unwantedStrings = ["(ITA)", "(Dub)", "(Dub ID)", "(Dublado)"]
           var cleanedTitle = title
@@ -2079,18 +1994,12 @@ extension CustomVideoPlayerView {
           return cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
       }
 
-       // showAlert (from AnimeDetailsVC)
         func showAlert(title: String, message: String) {
             let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
 
-            // Ensure presentation on the main thread and find top controller
              DispatchQueue.main.async {
-                 var topController = UIApplication.shared.windows.filter {$0.isKeyWindow}.first?.rootViewController
-                 while let presentedViewController = topController?.presentedViewController {
-                     topController = presentedViewController
-                 }
-                 topController?.present(alertController, animated: true, completion: nil)
+                 self.findViewController()?.present(alertController, animated: true, completion: nil)
              }
         }
 }
