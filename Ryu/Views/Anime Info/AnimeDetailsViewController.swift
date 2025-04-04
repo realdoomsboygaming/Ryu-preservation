@@ -1637,6 +1637,80 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     }
 }
 
+// Remove the UIContextMenuInteractionDelegate extension
+extension AnimeDetailViewController: URLSessionDownloadDelegate {
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let taskDescription = downloadTask.taskDescription else { return }
+        
+        // Get a safe filename from the task description
+        let safeFilename = taskDescription.replacingOccurrences(of: "/", with: "-")
+                                         .replacingOccurrences(of: "\\", with: "-")
+        
+        let documentDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let destinationURL = documentDirectory.appendingPathComponent("\(safeFilename).mp4")
+        
+        do {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            
+            try FileManager.default.moveItem(at: location, to: destinationURL)
+            
+            // Find the episode that completed
+            for (href, task) in activeDownloads {
+                if task == downloadTask {
+                    activeDownloads.removeValue(forKey: href)
+                    break
+                }
+            }
+            
+            // Update progress
+            DispatchQueue.main.async { [weak self] in
+                self?.completedDownloadsCount += 1
+                self?.updateDownloadProgress()
+                
+                // Notify that download list was updated
+                NotificationCenter.default.post(name: .downloadListUpdated, object: nil)
+            }
+            
+        } catch {
+            print("Error moving downloaded file: \(error.localizedDescription)")
+        }
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        // Update progress for individual download if needed
+        // For now we'll just focus on the overall batch progress
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            print("Download task failed with error: \(error.localizedDescription)")
+            
+            // Find and remove the failed download from tracking
+            for (href, task) in activeDownloads {
+                if task == task {
+                    activeDownloads.removeValue(forKey: href)
+                    break
+                }
+            }
+            
+            // Still increment counter to maintain overall progress
+            DispatchQueue.main.async { [weak self] in
+                self?.completedDownloadsCount += 1
+                self?.updateDownloadProgress()
+            }
+        }
+    }
+    
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        // Called when all tasks are finished in background session
+        DispatchQueue.main.async { [weak self] in
+            self?.updateDownloadProgress()
+        }
+    }
+}
+
 extension AnimeDetailViewController: SynopsisCellDelegate {
     func synopsisCellDidToggleExpansion(_ cell: SynopsisCell) {
         isSynopsisExpanded.toggle()
