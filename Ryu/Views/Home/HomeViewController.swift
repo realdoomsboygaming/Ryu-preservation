@@ -1,7 +1,7 @@
 import UIKit
 import SwiftSoup
-import GoogleCast 
-class HomeViewController: UITableViewController, SourceSelectionDelegate, UIContextMenuInteractionDelegate {
+
+class HomeViewController: UITableViewController, SourceSelectionDelegate {
 
     @IBOutlet private weak var airingCollectionView: UICollectionView!
     @IBOutlet private weak var trendingCollectionView: UICollectionView!
@@ -79,25 +79,24 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        view.viewWithTag(999)?.removeFromSuperview() // Ensure empty state label is removed if needed
+        view.viewWithTag(999)?.removeFromSuperview() // Remove potential old empty label
         navigationController?.navigationBar.prefersLargeTitles = true
         loadContinueWatchingItems()
-        setupSelectedSourceLabel() // Update source label in case it changed in settings
+        setupSelectedSourceLabel()
 
-        // Check if the selected source changed and refresh featured if needed
-        let currentSelectedSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? "AnimeWorld"
-        if let displayedSource = selectedSourceLabel.text?.replacingOccurrences(of: "on ", with: "").replacingOccurrences(of: "%", with: "") {
-            if displayedSource != currentSelectedSource {
-                fetchFeaturedAnime { [weak self] in
-                    self?.refreshFeaturedUI()
-                }
-            }
-        }
+        // Refresh featured only if source changed
+        let currentSelectedSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "AnimeWorld"
+        if let displayedSource = selectedSourceLabel.text?.replacingOccurrences(of: "on ", with: "").replacingOccurrences(of: "%", with: ""), displayedSource != currentSelectedSource {
+             fetchFeaturedAnime { [weak self] in
+                 self?.refreshFeaturedUI()
+             }
+         }
     }
 
     private func setupContextMenus() {
-        // Apply context menus to relevant collection views
-        let collectionViews = [trendingCollectionView, seasonalCollectionView, airingCollectionView] // Removed featuredCollectionView for now
+        // Applied only to collection views showing data from AniList/MAL/Kitsu
+        let collectionViews = [trendingCollectionView, seasonalCollectionView, airingCollectionView]
+
         for collectionView in collectionViews {
             let interaction = UIContextMenuInteraction(delegate: self)
             collectionView?.addInteraction(interaction)
@@ -137,6 +136,7 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
                 popoverController.sourceView = cell
                 popoverController.sourceRect = cell.bounds
             } else {
+                // Fallback presentation if cell is not visible
                 popoverController.sourceView = continueWatchingCollectionView
                 popoverController.sourceRect = CGRect(x: continueWatchingCollectionView.bounds.midX, y: continueWatchingCollectionView.bounds.midY, width: 0, height: 0)
             }
@@ -151,18 +151,8 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
     }
 
     private func setupEmptyContinueWatchingLabel() {
-        emptyContinueWatchingLabel.frame = continueWatchingCollectionView.bounds // Initial frame
+        emptyContinueWatchingLabel.frame = continueWatchingCollectionView.bounds // Set initial frame
         continueWatchingCollectionView.backgroundView = emptyContinueWatchingLabel
-        // Ensure constraints are set if using Auto Layout for the background view
-        emptyContinueWatchingLabel.translatesAutoresizingMaskIntoConstraints = false
-        if let backgroundView = continueWatchingCollectionView.backgroundView {
-            NSLayoutConstraint.activate([
-                emptyContinueWatchingLabel.centerXAnchor.constraint(equalTo: backgroundView.centerXAnchor),
-                emptyContinueWatchingLabel.centerYAnchor.constraint(equalTo: backgroundView.centerYAnchor, constant: -20), // Adjust vertical position
-                emptyContinueWatchingLabel.leadingAnchor.constraint(equalTo: backgroundView.leadingAnchor, constant: 20),
-                emptyContinueWatchingLabel.trailingAnchor.constraint(equalTo: backgroundView.trailingAnchor, constant: -20)
-            ])
-        }
     }
 
     func loadContinueWatchingItems() {
@@ -173,13 +163,9 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
             let randomText = funnyTexts.randomElement() ?? "No anime here!"
             emptyContinueWatchingLabel.text = randomText
             emptyContinueWatchingLabel.isHidden = false
-            continueWatchingCollectionView.backgroundView?.isHidden = false // Make sure background is visible
         } else {
             emptyContinueWatchingLabel.isHidden = true
-             continueWatchingCollectionView.backgroundView?.isHidden = true // Hide background when not empty
         }
-        // Reload the table view section containing the continue watching collection view
-        tableView.reloadSections(IndexSet(integer: 1), with: .none)
     }
 
     func setupCollectionViews() {
@@ -194,19 +180,22 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
             let identifier = cellIdentifiers[index]
             let cellClass = cellClasses[index]
 
-            if identifier == "ContinueWatchingCell" {
-                collectionView?.register(cellClass, forCellWithReuseIdentifier: identifier)
-            } else {
-                collectionView?.register(UINib(nibName: identifier, bundle: nil), forCellWithReuseIdentifier: identifier)
-            }
-
-             // Add flow layout setup for horizontal scrolling and margins
-             if let flowLayout = collectionView?.collectionViewLayout as? UICollectionViewFlowLayout {
-                 flowLayout.scrollDirection = .horizontal
-                 flowLayout.sectionInset = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16) // Add left/right margins
+            if cellClass is UICollectionViewCell.Type {
+                 // Register XIBs for custom cells if they exist
+                 if identifier == "ContinueWatchingCell" {
+                     // ContinueWatchingCell is registered programmatically
+                     collectionView?.register(cellClass, forCellWithReuseIdentifier: identifier)
+                 } else if ["AiringAnimeCell", "SlimmAnimeCell"].contains(identifier) {
+                     let nib = UINib(nibName: identifier, bundle: nil)
+                     collectionView?.register(nib, forCellWithReuseIdentifier: identifier)
+                 } else {
+                     // Fallback for standard cells (though unlikely needed with custom cells)
+                     collectionView?.register(cellClass, forCellWithReuseIdentifier: identifier)
+                 }
              }
         }
     }
+
 
     private func setupErrorLabelsAndActivityIndicators() {
         let errorLabels = [airingErrorLabel, trendingErrorLabel, seasonalErrorLabel, featuredErrorLabel]
@@ -218,26 +207,14 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
             label.textAlignment = .center
             label.numberOfLines = 0
             label.isHidden = true
-            label.translatesAutoresizingMaskIntoConstraints = false // Ensure Auto Layout is enabled
 
             let collectionView = collectionViews[index]
             collectionView?.backgroundView = label // Set as background view
 
-            // Add constraints for the label within the background view
-            if let backgroundView = collectionView?.backgroundView {
-                 NSLayoutConstraint.activate([
-                     label.centerXAnchor.constraint(equalTo: backgroundView.centerXAnchor),
-                     label.centerYAnchor.constraint(equalTo: backgroundView.centerYAnchor),
-                     label.leadingAnchor.constraint(equalTo: backgroundView.leadingAnchor, constant: 16),
-                     label.trailingAnchor.constraint(equalTo: backgroundView.trailingAnchor, constant: -16)
-                 ])
-            }
-
-
             let activityIndicator = activityIndicators[index]
             activityIndicator.hidesWhenStopped = true
-             collectionView?.addSubview(activityIndicator) // Add indicator as subview
-             activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+            collectionView?.addSubview(activityIndicator) // Add indicator as subview
+             activityIndicator.translatesAutoresizingMaskIntoConstraints = false // Important for constraints
              NSLayoutConstraint.activate([
                  activityIndicator.centerXAnchor.constraint(equalTo: collectionView!.centerXAnchor),
                  activityIndicator.centerYAnchor.constraint(equalTo: collectionView!.centerYAnchor)
@@ -256,25 +233,28 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
     }
 
     func setupSelectedSourceLabel() {
-        let selectedSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? "AnimeWorld"
-        selectSourceLable.title = selectedSource // Update the button title directly
+        let selectedSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "AnimeWorld"
+        selectSourceLable.title = selectedSource
 
-         // Update the label below the "Featured" title
-         if selectedSourceLabel != nil {
-             selectedSourceLabel.text = String(format: NSLocalizedString("on %@%", comment: "Prefix for selected Source"), selectedSource)
-         }
+        // Update the label text only if it has changed
+        let newLabelText = String(format: NSLocalizedString("on %@%", comment: "Prefix for selected Source"), selectedSource)
+        if selectedSourceLabel.text != newLabelText {
+            selectedSourceLabel.text = newLabelText
+            // Optionally trigger a refresh if the source change requires it
+            // fetchFeaturedAnime { [weak self] in self?.refreshFeaturedUI() } // Moved this logic to viewWillAppear
+        }
     }
+
 
     func setupRefreshControl() {
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refreshData), for: .valueChanged)
-        // Add the refresh control to the table view
+        // Assign the refresh control to the TableView, not CollectionView
         tableView.refreshControl = refreshControl
     }
 
-
     @objc func refreshData() {
-        fetchAnimeData()
+        fetchAnimeData() // Refetch all data including featured
     }
 
     private func setupActivityIndicators() {
@@ -286,7 +266,7 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
 
             indicator.hidesWhenStopped = true
             indicator.translatesAutoresizingMaskIntoConstraints = false
-            collectionView.addSubview(indicator) // Add as subview, not background
+            collectionView.addSubview(indicator) // Add as subview
 
             NSLayoutConstraint.activate([
                 indicator.centerXAnchor.constraint(equalTo: collectionView.centerXAnchor),
@@ -294,7 +274,6 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
             ])
         }
     }
-
 
     func fetchAnimeData() {
         let dispatchGroup = DispatchGroup()
@@ -311,7 +290,7 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
         fetchAiringAnime { dispatchGroup.leave() }
 
         dispatchGroup.enter()
-        fetchFeaturedAnime { dispatchGroup.leave() }
+        fetchFeaturedAnime { dispatchGroup.leave() } // Fetch featured along with others
 
         dispatchGroup.notify(queue: .main) {
             self.refreshUI()
@@ -322,17 +301,16 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
 
     func fetchTrendingAnime(completion: @escaping () -> Void) {
         aniListServiceTrending.fetchTrendingAnime { [weak self] animeList in
-            DispatchQueue.main.async { // Ensure UI updates on main thread
+            DispatchQueue.main.async {
                 if let animeList = animeList, !animeList.isEmpty {
                     self?.trendingAnime = animeList
                     self?.trendingErrorLabel.isHidden = true
-                    self?.trendingCollectionView.backgroundView?.isHidden = true // Hide error label view
+                    self?.trendingCollectionView.reloadData() // Reload specific collection view
                 } else {
                     self?.trendingErrorLabel.text = NSLocalizedString("Unable to load trending anime. Make sure to check your connection", comment: "Trending Anime loading error")
                     self?.trendingErrorLabel.isHidden = false
-                    self?.trendingCollectionView.backgroundView?.isHidden = false // Show error label view
                 }
-                 self?.trendingCollectionView.reloadData() // Reload specific collection view
+                self?.trendingActivityIndicator.stopAnimating() // Stop specific indicator
                 completion()
             }
         }
@@ -340,19 +318,18 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
 
     func fetchSeasonalAnime(completion: @escaping () -> Void) {
         aniListServiceSeasonal.fetchSeasonalAnime { [weak self] animeList in
-            DispatchQueue.main.async {
+             DispatchQueue.main.async {
                 if let animeList = animeList, !animeList.isEmpty {
                     self?.seasonalAnime = animeList
                     self?.seasonalErrorLabel.isHidden = true
-                    self?.seasonalCollectionView.backgroundView?.isHidden = true
+                    self?.seasonalCollectionView.reloadData() // Reload specific collection view
                 } else {
                     self?.seasonalErrorLabel.text = NSLocalizedString("Unable to load seasonal anime. Make sure to check your connection", comment: "Seasonal Anime loading error")
                     self?.seasonalErrorLabel.isHidden = false
-                     self?.seasonalCollectionView.backgroundView?.isHidden = false
                 }
-                 self?.seasonalCollectionView.reloadData()
+                 self?.seasonalActivityIndicator.stopAnimating() // Stop specific indicator
                 completion()
-            }
+             }
         }
     }
 
@@ -362,37 +339,41 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
                 if let animeList = animeList, !animeList.isEmpty {
                     self?.airingAnime = animeList
                     self?.airingErrorLabel.isHidden = true
-                     self?.airingCollectionView.backgroundView?.isHidden = true
+                    self?.airingCollectionView.reloadData() // Reload specific collection view
                 } else {
                     self?.airingErrorLabel.text = NSLocalizedString("Unable to load airing anime. Make sure to check your connection", comment: "Airing Anime loading error")
                     self?.airingErrorLabel.isHidden = false
-                     self?.airingCollectionView.backgroundView?.isHidden = false
                 }
-                 self?.airingCollectionView.reloadData()
+                 self?.airingActivityIndicator.stopAnimating() // Stop specific indicator
                 completion()
             }
         }
     }
 
-    // Use the extension method for fetching featured anime
     private func fetchFeaturedAnime(completion: @escaping () -> Void) {
-        let selectedSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? "AnimeWorld"
-        let (sourceURL, parseStrategy) = getSourceInfo(for: selectedSource)
+        guard let selectedSource = UserDefaults.standard.selectedMediaSource else {
+            DispatchQueue.main.async {
+                self.featuredErrorLabel.text = "No source selected."
+                self.featuredErrorLabel.isHidden = false
+                self.featuredActivityIndicator.stopAnimating()
+                completion()
+            }
+            return
+        }
+
+        let (sourceURLString, parseStrategy) = getSourceInfo(for: selectedSource.rawValue)
 
         DispatchQueue.main.async {
             self.featuredAnime.removeAll()
             self.featuredCollectionView.reloadData()
             self.featuredActivityIndicator.startAnimating()
             self.featuredErrorLabel.isHidden = true
-            self.featuredCollectionView.backgroundView?.isHidden = true
         }
 
-        guard let urlString = sourceURL, let url = URL(string: urlString), let parse = parseStrategy else {
+        guard let urlString = sourceURLString, let url = URL(string: urlString), let parse = parseStrategy else {
             DispatchQueue.main.async {
-                self.featuredAnime = []
                 self.featuredErrorLabel.text = "Unable to load featured anime. Invalid source or parsing strategy."
                 self.featuredErrorLabel.isHidden = false
-                self.featuredCollectionView.backgroundView?.isHidden = false
                 self.featuredActivityIndicator.stopAnimating()
                 completion()
             }
@@ -402,73 +383,76 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
         URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            DispatchQueue.main.async { // Ensure all UI updates happen on main thread
-                self.featuredActivityIndicator.stopAnimating() // Stop indicator regardless of outcome
-
-                if let error = error {
+            if let error = error {
+                DispatchQueue.main.async {
                     self.featuredErrorLabel.text = "Error loading featured anime: \(error.localizedDescription)"
                     self.featuredErrorLabel.isHidden = false
-                    self.featuredCollectionView.backgroundView?.isHidden = false
-                    completion()
-                    return
-                }
-
-                guard let data = data, let html = String(data: data, encoding: .utf8) else {
-                    self.featuredErrorLabel.text = "Error loading featured anime. Invalid data received."
-                    self.featuredErrorLabel.isHidden = false
-                    self.featuredCollectionView.backgroundView?.isHidden = false
-                    completion()
-                    return
-                }
-
-                do {
-                    let doc: Document = try SwiftSoup.parse(html)
-                    let animeItems = try parse(doc)
-
-                    if !animeItems.isEmpty {
-                        self.featuredAnime = animeItems
-                        self.featuredErrorLabel.isHidden = true
-                        self.featuredCollectionView.backgroundView?.isHidden = true
-                    } else {
-                        self.featuredAnime = [] // Clear data if no items found
-                        self.featuredErrorLabel.text = "No featured anime found for \(selectedSource)."
-                        self.featuredErrorLabel.isHidden = false
-                        self.featuredCollectionView.backgroundView?.isHidden = false
-                    }
-                    self.featuredCollectionView.reloadData() // Reload the specific collection view
-                    completion()
-
-                } catch {
-                    self.featuredAnime = [] // Clear data on parsing error
-                    self.featuredErrorLabel.text = "Error parsing featured anime: \(error.localizedDescription)"
-                    self.featuredErrorLabel.isHidden = false
-                    self.featuredCollectionView.backgroundView?.isHidden = false
-                     self.featuredCollectionView.reloadData()
+                    self.featuredActivityIndicator.stopAnimating()
                     completion()
                 }
+                return
             }
+
+            guard let data = data else {
+                 DispatchQueue.main.async {
+                    self.featuredErrorLabel.text = "Error loading featured anime. No data received."
+                    self.featuredErrorLabel.isHidden = false
+                    self.featuredActivityIndicator.stopAnimating()
+                    completion()
+                 }
+                 return
+             }
+
+             let htmlString = String(data: data, encoding: .utf8)
+
+             do {
+                 // Pass nil for document if it's a JSON source, otherwise parse HTML
+                 let animeItems = try parse(nil, htmlString)
+
+                 DispatchQueue.main.async {
+                     self.featuredActivityIndicator.stopAnimating()
+                     if !animeItems.isEmpty {
+                         self.featuredAnime = animeItems
+                         self.featuredErrorLabel.isHidden = true
+                     } else {
+                         self.featuredErrorLabel.text = "No featured anime found."
+                         self.featuredErrorLabel.isHidden = false
+                     }
+                     self.featuredCollectionView.reloadData()
+                     completion()
+                 }
+             } catch {
+                 DispatchQueue.main.async {
+                     self.featuredErrorLabel.text = "Error parsing featured anime: \(error.localizedDescription)"
+                     self.featuredErrorLabel.isHidden = false
+                     self.featuredActivityIndicator.stopAnimating()
+                     completion()
+                 }
+             }
         }.resume()
     }
 
-
+    // Consolidated refresh function
     func refreshUI() {
         DispatchQueue.main.async {
-            self.loadContinueWatchingItems() // This already reloads the collection view
+            self.loadContinueWatchingItems() // Ensure this is called to update the label
+            // Reload all collection views
+            self.continueWatchingCollectionView.reloadData()
             self.airingCollectionView.reloadData()
             self.trendingCollectionView.reloadData()
             self.seasonalCollectionView.reloadData()
-             // Featured is reloaded within its fetch function
+            self.featuredCollectionView.reloadData() // Ensure featured is reloaded too
+
             self.setupDateLabel()
             self.setupSelectedSourceLabel()
         }
     }
 
-
     @IBAction func selectSourceButtonTapped(_ sender: UIBarButtonItem) {
         SourceMenu.showSourceSelector(from: self, barButtonItem: sender) { [weak self] in
             self?.setupSelectedSourceLabel()
-            // Fetch featured anime immediately after source selection
-            self?.fetchFeaturedAnime { [weak self] in
+            // Trigger featured anime fetch when source changes
+            self?.fetchFeaturedAnime {
                  self?.refreshFeaturedUI()
              }
         }
@@ -484,7 +468,7 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
     func refreshFeaturedUI() {
         DispatchQueue.main.async {
             self.featuredCollectionView.reloadData()
-            self.setupSelectedSourceLabel() // Ensure label updates correctly
+            self.setupSelectedSourceLabel() // Update label again after fetch completes
         }
     }
 
@@ -512,26 +496,24 @@ class HomeViewController: UITableViewController, SourceSelectionDelegate, UICont
         let item = continueWatchingItems[indexPath.item]
         ContinueWatchingManager.shared.clearItem(fullURL: item.fullURL)
         continueWatchingItems.remove(at: indexPath.item)
-        continueWatchingCollectionView.deleteItems(at: [indexPath])
+        continueWatchingCollectionView.deleteItems(at: [indexPath]) // Use deleteItems for animation
 
         if continueWatchingItems.isEmpty {
             let randomText = funnyTexts.randomElement() ?? "No anime here!"
             emptyContinueWatchingLabel.text = randomText
             emptyContinueWatchingLabel.isHidden = false
-            continueWatchingCollectionView.backgroundView?.isHidden = false
         }
-        // Reload the table view section to potentially update its height if needed
-        tableView.reloadSections(IndexSet(integer: 1), with: .none)
     }
 
     @objc func handleAppDataReset() {
         DispatchQueue.main.async {
             self.fetchAnimeData() // Refetch all data
-            self.refreshUI() // Update UI elements
+            self.refreshUI() // Update the entire UI
         }
     }
 }
 
+// MARK: - CollectionView DataSource
 extension HomeViewController: UICollectionViewDataSource {
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         switch collectionView {
@@ -558,21 +540,23 @@ extension HomeViewController: UICollectionViewDataSource {
             cell.configure(with: item)
             return cell
         case trendingCollectionView, seasonalCollectionView, featuredCollectionView:
-             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "SlimmAnimeCell", for: indexPath)
-             if let slimmCell = cell as? SlimmAnimeCell {
-                 configureSlimmCell(slimmCell, at: indexPath, for: collectionView)
-             } else {
-                  print("Error: Could not dequeue SlimmAnimeCell") // Debugging
-             }
-             return cell
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "SlimmAnimeCell", for: indexPath)
+            if let slimmCell = cell as? SlimmAnimeCell {
+                configureSlimmCell(slimmCell, at: indexPath, for: collectionView)
+            }
+            // Add context menu interaction
+            let interaction = UIContextMenuInteraction(delegate: self)
+            cell.addInteraction(interaction)
+            return cell
         case airingCollectionView:
-             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "AiringAnimeCell", for: indexPath)
-             if let airingCell = cell as? AiringAnimeCell {
-                 configureAiringCell(airingCell, at: indexPath)
-             } else {
-                  print("Error: Could not dequeue AiringAnimeCell") // Debugging
-             }
-             return cell
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "AiringAnimeCell", for: indexPath)
+            if let airingCell = cell as? AiringAnimeCell {
+                configureAiringCell(airingCell, at: indexPath)
+            }
+             // Add context menu interaction
+             let interaction = UIContextMenuInteraction(delegate: self)
+             cell.addInteraction(interaction)
+            return cell
         default:
             fatalError("Unexpected collection view")
         }
@@ -581,17 +565,14 @@ extension HomeViewController: UICollectionViewDataSource {
     private func configureSlimmCell(_ cell: SlimmAnimeCell, at indexPath: IndexPath, for collectionView: UICollectionView) {
         switch collectionView {
         case trendingCollectionView:
-            guard indexPath.item < trendingAnime.count else { return } // Bounds check
             let anime = trendingAnime[indexPath.item]
             let imageUrl = URL(string: anime.coverImage.large)
             cell.configure(with: anime.title.romaji, imageUrl: imageUrl)
         case seasonalCollectionView:
-            guard indexPath.item < seasonalAnime.count else { return } // Bounds check
             let anime = seasonalAnime[indexPath.item]
             let imageUrl = URL(string: anime.coverImage.large)
             cell.configure(with: anime.title.romaji, imageUrl: imageUrl)
         case featuredCollectionView:
-            guard indexPath.item < featuredAnime.count else { return } // Bounds check
             let anime = featuredAnime[indexPath.item]
             let imageUrl = URL(string: anime.imageURL)
             cell.configure(with: anime.title, imageUrl: imageUrl)
@@ -601,7 +582,6 @@ extension HomeViewController: UICollectionViewDataSource {
     }
 
     private func configureAiringCell(_ cell: AiringAnimeCell, at indexPath: IndexPath) {
-         guard indexPath.item < airingAnime.count else { return } // Bounds check
         let anime = airingAnime[indexPath.item]
         let imageUrl = URL(string: anime.coverImage.large)
         cell.configure(
@@ -614,27 +594,23 @@ extension HomeViewController: UICollectionViewDataSource {
     }
 }
 
+// MARK: - CollectionView Delegate
 extension HomeViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         switch collectionView {
         case continueWatchingCollectionView:
-             guard indexPath.item < continueWatchingItems.count else { return } // Bounds check
             let item = continueWatchingItems[indexPath.item]
             resumeWatching(item: item)
         case trendingCollectionView:
-             guard indexPath.item < trendingAnime.count else { return } // Bounds check
             let anime = trendingAnime[indexPath.item]
             navigateToAnimeDetail(for: anime)
         case seasonalCollectionView:
-             guard indexPath.item < seasonalAnime.count else { return } // Bounds check
             let anime = seasonalAnime[indexPath.item]
             navigateToAnimeDetail(for: anime)
         case airingCollectionView:
-             guard indexPath.item < airingAnime.count else { return } // Bounds check
             let anime = airingAnime[indexPath.item]
             navigateToAnimeDetail(for: anime)
         case featuredCollectionView:
-             guard indexPath.item < featuredAnime.count else { return } // Bounds check
             let anime = featuredAnime[indexPath.item]
             navigateToAnimeDetail(title: anime.title, imageUrl: anime.imageURL, href: anime.href)
         default:
@@ -645,27 +621,25 @@ extension HomeViewController: UICollectionViewDelegate {
     private func resumeWatching(item: ContinueWatchingItem) {
         let detailVC = AnimeDetailViewController()
 
-        // Configure detailVC with item data
         detailVC.configure(title: item.animeTitle, imageUrl: item.imageURL, href: item.fullURL, source: item.source)
 
-        // Set the selected source in UserDefaults *before* pushing
+        // Create a dummy episode to pass - actual episode logic is in AnimeDetailViewController
+        let episode = Episode(number: String(item.episodeNumber), href: item.fullURL, downloadUrl: "")
+        let dummyCell = EpisodeCell() // Need a cell to pass for progress updates
+        dummyCell.episodeNumber = String(item.episodeNumber)
+
+        // Ensure the correct source is set before navigating
         UserDefaults.standard.set(item.source, forKey: "selectedMediaSource")
-        didSelectNewSource() // Update UI elements related to source if needed
+        self.didSelectNewSource() // This might trigger an unnecessary fetch, consider refining
 
-        // Show loading banner *before* fetching details, as fetching happens in detailVC's viewDidLoad
-        detailVC.showLoadingBanner()
-
-        // Push the view controller
+        // Navigate first
         navigationController?.pushViewController(detailVC, animated: true)
 
-        // After pushing, we need to find the episode and trigger selection *within* detailVC
-        // This needs detailVC to be loaded first. We can pass the info or use a completion block.
-        // For simplicity, let's assume detailVC handles resuming based on the passed href/fullURL on its load.
-        // If detailVC needs explicit triggering, you might need a delegate pattern or pass the episode info.
-
-        // Example of passing info (if needed):
-        // detailVC.initialEpisodeToPlayHref = item.fullURL // Add this property to detailVC
-        // detailVC.initialPlaybackTime = item.lastPlayedTime
+        // Then call episodeSelected on the presented VC
+        // Use DispatchQueue.main.async to ensure it runs after navigation transition completes
+        DispatchQueue.main.async {
+            detailVC.episodeSelected(episode: episode, cell: dummyCell)
+        }
     }
 
 
@@ -678,161 +652,179 @@ extension HomeViewController: UICollectionViewDelegate {
     }
 
     private func navigateToAnimeDetail(title: String, imageUrl: String, href: String) {
-         let detailVC = AnimeDetailViewController()
-         let selectedMedaiSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? "" // Ensure source is set
+        let detailVC = AnimeDetailViewController()
+        let selectedMedaiSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "" // Use enum
 
-         detailVC.configure(title: title, imageUrl: imageUrl, href: href, source: selectedMedaiSource)
-         navigationController?.pushViewController(detailVC, animated: true)
-     }
+        detailVC.configure(title: title, imageUrl: imageUrl, href: href, source: selectedMedaiSource)
+        navigationController?.pushViewController(detailVC, animated: true)
+    }
 }
 
-// MARK: - Context Menu Delegate Implementation
-extension HomeViewController { // Keep UIContextMenuInteractionDelegate conformance
-
+// MARK: - Context Menu Interaction Delegate
+extension HomeViewController: UIContextMenuInteractionDelegate {
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-         guard let collectionView = interaction.view as? UICollectionView,
-               let indexPath = collectionView.indexPathForItem(at: location) else { return nil }
+        guard let collectionView = interaction.view as? UICollectionView,
+              let indexPath = collectionView.indexPathForItem(at: location) else { return nil }
 
-         // Determine which collection view it is and get the corresponding section index
-         let section: Int
-         switch collectionView {
-         case trendingCollectionView: section = 0
-         case seasonalCollectionView: section = 1
-         case airingCollectionView: section = 2
-         // Add featuredCollectionView if needed, assign a unique section number (e.g., 3)
-          case featuredCollectionView: section = 3 // Example section index
-         default: return nil // Don't show menu for other collection views like Continue Watching
-         }
+        // Determine the section based on the collection view
+        let section: Int
+        switch collectionView {
+        case trendingCollectionView: section = 0
+        case seasonalCollectionView: section = 1
+        case airingCollectionView: section = 2
+        case featuredCollectionView: section = 3 // Add case for featured
+        default: return nil
+        }
 
-        // Use a combined IndexPath (item from collection view, section from mapping) as the identifier
-        let contextIdentifier = IndexPath(item: indexPath.item, section: section) as NSCopying
+        // Use a unique identifier combining section and item
+        let identifier = "\(section)-\(indexPath.item)" as NSCopying
 
-        return UIContextMenuConfiguration(identifier: contextIdentifier, previewProvider: { [weak self] in
-            // Pass the combined IndexPath to the preview provider
-            self?.previewViewController(for: contextIdentifier as! IndexPath)
+        return UIContextMenuConfiguration(identifier: identifier, previewProvider: { [weak self] in
+            self?.previewViewController(for: IndexPath(item: indexPath.item, section: section))
         }, actionProvider: { [weak self] _ in
             guard let self = self else { return nil }
-            // Pass the combined IndexPath to action handlers
-            let openAction = UIAction(title: "Open", image: UIImage(systemName: "eye")) { _ in
-                self.openAnimeDetail(for: contextIdentifier as! IndexPath)
+
+            // Actions for AniList/MAL/Kitsu based collection views
+            if collectionView == self.trendingCollectionView || collectionView == self.seasonalCollectionView || collectionView == self.airingCollectionView {
+                 guard let anime = self.animeForIndexPath(IndexPath(item: indexPath.item, section: section)) else { return nil }
+                 let openAction = UIAction(title: "Open", image: UIImage(systemName: "eye")) { _ in
+                     self.openAnimeDetail(for: IndexPath(item: indexPath.item, section: section))
+                 }
+
+                 let searchAction = UIAction(title: "Search Episodes", image: UIImage(systemName: "magnifyingglass")) { _ in
+                     self.searchEpisodes(for: IndexPath(item: indexPath.item, section: section))
+                 }
+                 return UIMenu(title: "", children: [openAction, searchAction])
+            }
+            // Actions for Featured collection view (source-specific)
+            else if collectionView == self.featuredCollectionView {
+                 guard let animeItem = self.featuredAnime[safe: indexPath.item] else { return nil }
+                 let openAction = UIAction(title: "Open", image: UIImage(systemName: "eye")) { _ in
+                     self.navigateToAnimeDetail(title: animeItem.title, imageUrl: animeItem.imageURL, href: animeItem.href)
+                 }
+                 return UIMenu(title: "", children: [openAction])
+            }
+            else {
+                 return nil // No context menu for other collection views like continue watching
             }
 
-            let searchAction = UIAction(title: "Search Episodes", image: UIImage(systemName: "magnifyingglass")) { _ in
-                self.searchEpisodes(for: contextIdentifier as! IndexPath)
-            }
-
-            return UIMenu(title: "", children: [openAction, searchAction])
         })
     }
 
+
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
-         guard let combinedIndexPath = configuration.identifier as? IndexPath,
-               let cell = cellForIndexPath(combinedIndexPath) else {
-                   return nil
-               }
+        guard let indexPath = configuration.identifier as? IndexPath, // Use correct identifier type
+              let cell = cellForIndexPath(indexPath) else {
+            return nil
+        }
 
-         let parameters = UIPreviewParameters()
-         parameters.backgroundColor = .clear
-         let previewTarget = UIPreviewTarget(container: cell.superview!, center: cell.center) // Use cell's center in its superview
+        let parameters = UIPreviewParameters()
+        parameters.backgroundColor = .clear
+        // Create preview target centered on the cell's content view
+        let target = UIPreviewTarget(container: cell.superview ?? cell, center: cell.center)
+        return UITargetedPreview(view: cell.contentView, parameters: parameters, target: target)
+    }
 
-         return UITargetedPreview(view: cell, parameters: parameters, target: previewTarget)
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, willPerformPreviewActionForMenuWith configuration: UIContextMenuConfiguration, animator: UIContextMenuInteractionCommitAnimating) {
+         guard let indexPath = configuration.identifier as? IndexPath else { return }
+
+         animator.addCompletion { [weak self] in
+             self?.openAnimeDetail(for: indexPath)
+         }
      }
 
-     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForDismissingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
-          guard let combinedIndexPath = configuration.identifier as? IndexPath,
-                let cell = cellForIndexPath(combinedIndexPath) else {
-                    return nil
-                }
-          let parameters = UIPreviewParameters()
-          parameters.backgroundColor = .clear
-          let previewTarget = UIPreviewTarget(container: cell.superview!, center: cell.center)
 
-          return UITargetedPreview(view: cell, parameters: parameters, target: previewTarget)
-      }
+    private func previewViewController(for indexPath: IndexPath) -> UIViewController? {
+        // Handle preview only for sections with Anime objects (AniList/MAL/Kitsu data)
+         guard indexPath.section < 3, // Only for trending, seasonal, airing
+               let anime = animeForIndexPath(indexPath) else {
+             // For featured section, potentially show a simple image/title preview if desired
+             if indexPath.section == 3, let animeItem = featuredAnime[safe: indexPath.item] {
+                  let vc = UIViewController()
+                  let imageView = UIImageView()
+                  imageView.kf.setImage(with: URL(string: animeItem.imageURL))
+                  imageView.contentMode = .scaleAspectFit
+                  vc.view = imageView
+                  // Adjust preferredContentSize if needed
+                 vc.preferredContentSize = CGSize(width: 150, height: 220) // Example size
+                 return vc
+             }
+             return nil
+         }
 
-    // Helper to get the correct anime data based on the *combined* IndexPath's section
-    private func animeForIndexPath(_ combinedIndexPath: IndexPath) -> Anime? { // Return optional Anime
-        // Handle only sections that correspond to Anilist data (Anime struct)
-        switch combinedIndexPath.section {
-        case 0: // Trending
-            guard combinedIndexPath.item < trendingAnime.count else { return nil }
-            return trendingAnime[combinedIndexPath.item]
-        case 1: // Seasonal
-            guard combinedIndexPath.item < seasonalAnime.count else { return nil }
-            return seasonalAnime[combinedIndexPath.item]
-        case 2: // Airing
-            guard combinedIndexPath.item < airingAnime.count else { return nil }
-            return airingAnime[combinedIndexPath.item]
-        // Section 3 (Featured) uses AnimeItem, not Anime, so return nil here
-        case 3:
-             return nil // Featured anime uses AnimeItem struct
+        let storyboard = UIStoryboard(name: "AnilistAnimeInformation", bundle: nil)
+        guard let animeDetailVC = storyboard.instantiateViewController(withIdentifier: "AnimeInformation") as? AnimeInformation else {
+            return nil
+        }
+
+        animeDetailVC.animeID = anime.id
+        // Adjust preferredContentSize if needed for the preview
+        animeDetailVC.preferredContentSize = CGSize(width: 0, height: 300) // Example size
+        return animeDetailVC
+    }
+
+
+    private func animeForIndexPath(_ indexPath: IndexPath) -> Anime? {
+        // Only return Anime for sections 0, 1, 2
+        guard indexPath.section < 3 else { return nil }
+        switch indexPath.section {
+        case 0:
+            return trendingAnime[safe: indexPath.item] // Use safe subscripting
+        case 1:
+            return seasonalAnime[safe: indexPath.item]
+        case 2:
+            return airingAnime[safe: indexPath.item]
         default:
             return nil
         }
     }
 
-    // Helper to get the correct AnimeItem data for the featured section
-     private func animeItemForIndexPath(_ combinedIndexPath: IndexPath) -> AnimeItem? {
-         guard combinedIndexPath.section == 3, // Ensure it's the featured section
-               combinedIndexPath.item < featuredAnime.count else {
-             return nil
-         }
-         return featuredAnime[combinedIndexPath.item]
-     }
 
-
-     // Updated preview provider
-     private func previewViewController(for combinedIndexPath: IndexPath) -> UIViewController? {
-          if let anime = animeForIndexPath(combinedIndexPath) { // Handles Anilist sections
-              let storyboard = UIStoryboard(name: "AnilistAnimeInformation", bundle: nil)
-              guard let animeDetailVC = storyboard.instantiateViewController(withIdentifier: "AnimeInformation") as? AnimeInformation else {
-                  return nil
-              }
-              animeDetailVC.animeID = anime.id
-              return animeDetailVC
-          } else if let animeItem = animeItemForIndexPath(combinedIndexPath) { // Handles Featured section
-              let detailVC = AnimeDetailViewController()
-              let selectedMedaiSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? ""
-              detailVC.configure(title: animeItem.title, imageUrl: animeItem.imageURL, href: animeItem.href, source: selectedMedaiSource)
-              // We need to fetch data within the preview if possible, or show basic info
-              // For simplicity, returning the configured VC; it will load data when fully presented.
-              return detailVC
-          }
-          return nil
-      }
-
-    // Updated action handler
-    private func openAnimeDetail(for combinedIndexPath: IndexPath) {
-         if let anime = animeForIndexPath(combinedIndexPath) {
+    private func openAnimeDetail(for indexPath: IndexPath) {
+         // Handle opening based on section
+         if indexPath.section < 3 { // Trending, Seasonal, Airing
+             guard let anime = animeForIndexPath(indexPath) else { return }
              navigateToAnimeDetail(for: anime)
-         } else if let animeItem = animeItemForIndexPath(combinedIndexPath) {
+         } else if indexPath.section == 3 { // Featured
+             guard let animeItem = featuredAnime[safe: indexPath.item] else { return }
              navigateToAnimeDetail(title: animeItem.title, imageUrl: animeItem.imageURL, href: animeItem.href)
          }
      }
 
-     // Updated action handler
-     private func searchEpisodes(for combinedIndexPath: IndexPath) {
-          var query: String?
-          if let anime = animeForIndexPath(combinedIndexPath) {
-              query = anime.title.romaji // Use romaji title for Anilist items
-          } else if let animeItem = animeItemForIndexPath(combinedIndexPath) {
-              query = animeItem.title // Use the title from AnimeItem
-          }
 
-          guard let searchQuery = query, !searchQuery.isEmpty else {
-              showError(message: "Could not find anime title.")
-              return
-          }
-          searchMedia(query: searchQuery)
-      }
+    private func searchEpisodes(for indexPath: IndexPath) {
+        // Only search for sections with Anime objects
+        guard indexPath.section < 3, let anime = animeForIndexPath(indexPath) else { return }
+        let query = anime.title.romaji
 
-    // Updated helper to get the correct cell based on combined IndexPath
-    private func cellForIndexPath(_ combinedIndexPath: IndexPath) -> UICollectionViewCell? {
-         let collectionViews = [trendingCollectionView, seasonalCollectionView, airingCollectionView, featuredCollectionView] // Added featured
-         guard combinedIndexPath.section < collectionViews.count else { return nil }
-         // Use item from combinedIndexPath, section 0 for the specific collection view
-         return collectionViews[combinedIndexPath.section]?.cellForItem(at: IndexPath(item: combinedIndexPath.item, section: 0))
+        guard !query.isEmpty else {
+            showError(message: "Could not find anime title.")
+            return
+        }
+
+        searchMedia(query: query)
+    }
+
+    private func indexPathForCell(_ cell: UICollectionViewCell) -> IndexPath? {
+        let collectionViews = [trendingCollectionView, seasonalCollectionView, airingCollectionView, featuredCollectionView]
+
+        for (section, collectionView) in collectionViews.enumerated() {
+            if let indexPath = collectionView?.indexPath(for: cell) {
+                // Return an IndexPath with the correct section
+                return IndexPath(item: indexPath.item, section: section)
+            }
+        }
+        return nil
+    }
+
+
+     private func cellForIndexPath(_ indexPath: IndexPath) -> UICollectionViewCell? {
+         let collectionViews = [trendingCollectionView, seasonalCollectionView, airingCollectionView, featuredCollectionView]
+         guard indexPath.section < collectionViews.count else { return nil }
+         // Use item from the provided indexPath, section should be 0 for collection view's own index path system
+         return collectionViews[indexPath.section]?.cellForItem(at: IndexPath(item: indexPath.item, section: 0))
      }
+
 
     private func searchMedia(query: String) {
         let resultsVC = SearchResultsViewController()
@@ -847,7 +839,7 @@ extension HomeViewController { // Keep UIContextMenuInteractionDelegate conforma
     }
 }
 
-// AnimeItem definition (ensure it exists)
+// Models remain the same
 class AnimeItem: NSObject {
     let title: String
     let imageURL: String
@@ -860,7 +852,6 @@ class AnimeItem: NSObject {
     }
 }
 
-// Anime struct definition (ensure it exists)
 struct Anime {
     let id: Int
     let title: Title
@@ -872,7 +863,6 @@ struct Anime {
     var characters: [Character] = []
 }
 
-// Supporting structs (ensure they exist)
 struct MediaRelation {
     let node: MediaNode
 
