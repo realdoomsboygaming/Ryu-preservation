@@ -894,8 +894,12 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
     // Check if anime is in favorites
     func checkFavoriteStatus() {
-        if let title = animeTitle, let href = href {
-            isFavorite = FavoritesManager.shared.isFavorite(title: title, href: href)
+        if let title = animeTitle, let href = href, let imageURL = imageUrl, let sourceStr = source {
+            // Create a FavoriteItem object
+            if let imageURLObj = URL(string: imageURL), let hrefURL = URL(string: href) {
+                let item = FavoriteItem(title: title, imageURL: imageURLObj, contentURL: hrefURL, source: sourceStr)
+                isFavorite = FavoritesManager.shared.isFavorite(item)
+            }
         }
     }
 
@@ -931,20 +935,30 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         present(alertController, animated: true)
     }
     
+
     // Toggle favorite status
     func toggleFavorite() {
-        guard let title = animeTitle, let href = href else { return }
-        
+        guard let title = animeTitle, 
+              let href = href, 
+              let imageURL = imageUrl, 
+              let sourceStr = source,
+              let imageURLObj = URL(string: imageURL), 
+              let hrefURL = URL(string: href) else { return }
+    
+        let item = FavoriteItem(title: title, imageURL: imageURLObj, contentURL: hrefURL, source: sourceStr)
+    
         if isFavorite {
-            FavoritesManager.shared.removeFavorite(title: title, href: href)
+             FavoritesManager.shared.removeFavorite(item)
         } else {
-            FavoritesManager.shared.addFavorite(title: title, imageUrl: imageUrl ?? "", href: href, source: source ?? "")
+            FavoritesManager.shared.addFavorite(item)
         }
-        
+    
         isFavorite = !isFavorite
         tableView.reloadData()
     }
     
+
+
     // Fetch details and episodes from the selected source
     func fetchDetailsAndEpisodes() {
         guard let href = href else {
@@ -980,6 +994,47 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         }
     }
     
+    func openInExternalPlayer(player: String, url: URL) {
+        // Stop any currently playing content
+        if let currentPlayer = self.player {
+            currentPlayer.pause()
+            self.player = nil
+        }
+    
+        // Dismiss any active player controller
+        if let playerVC = self.playerViewController {
+            playerVC.dismiss(animated: true) {
+                self.playerViewController = nil
+            }
+        }
+    
+        // Handle different player types
+        switch player {
+        case "VLC":
+            // Launch VLC with the URL if installed
+            if let vlcURL = URL(string: "vlc://\(url.absoluteString)") {
+                UIApplication.shared.open(vlcURL, options: [:]) { success in
+                    if !success {
+                        self.showAlert(title: "Error", message: "VLC is not installed or could not be opened.")
+                    }
+                }
+            }
+        case "AVPlayer":
+            // Use built-in AVPlayer
+            let player = AVPlayer(url: url)
+            let playerVC = AVPlayerViewController()
+            playerVC.player = player
+            self.present(playerVC, animated: true) {
+                player.play()
+            }
+            self.player = player
+            self.playerViewController = playerVC
+        default:
+            // Default to Safari
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        }
+    }
+
     // MARK: - Required Protocol Methods
     
     // CustomPlayerViewDelegate method
