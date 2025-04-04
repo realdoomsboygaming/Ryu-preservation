@@ -1,10 +1,3 @@
-//
-//  EpisodeCell.swift
-//  Ryu
-//
-//  Created by Francesco on 25/06/24.
-//
-
 import UIKit
 import Kingfisher
 
@@ -16,6 +9,15 @@ struct Episode: Hashable {
     var episodeNumber: Int {
         return Int(number.replacingOccurrences(of: "[^0-9]", with: "", options: .regularExpression)) ?? 0
     }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(number)
+        hasher.combine(href)
+    }
+    
+    static func == (lhs: Episode, rhs: Episode) -> Bool {
+        return lhs.number == rhs.number && lhs.href == rhs.href
+    }
 }
 
 class EpisodeCell: UITableViewCell {
@@ -25,6 +27,10 @@ class EpisodeCell: UITableViewCell {
     let playbackProgressView = UIProgressView(progressViewStyle: .default)
     let remainingTimeLabel = UILabel()
     let infoButton = UIButton(type: .infoLight)
+    
+    // Selection mode properties
+    private var selectionIndicator = UIImageView()
+    private var isInSelectionMode = false
     
     private let progressFormatter: DateComponentsFormatter = {
         let formatter = DateComponentsFormatter()
@@ -47,6 +53,7 @@ class EpisodeCell: UITableViewCell {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         setupCell()
         setupGestureRecognizers()
+        setupSelectionIndicator()
     }
     
     required init?(coder: NSCoder) {
@@ -119,6 +126,34 @@ class EpisodeCell: UITableViewCell {
             
             contentView.bottomAnchor.constraint(equalTo: startnowLabel.bottomAnchor, constant: 10)
         ])
+    }
+    
+    private func setupSelectionIndicator() {
+        selectionIndicator.translatesAutoresizingMaskIntoConstraints = false
+        selectionIndicator.tintColor = .systemTeal
+        selectionIndicator.isHidden = true
+        contentView.addSubview(selectionIndicator)
+        
+        NSLayoutConstraint.activate([
+            selectionIndicator.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            selectionIndicator.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            selectionIndicator.widthAnchor.constraint(equalToConstant: 28),
+            selectionIndicator.heightAnchor.constraint(equalToConstant: 28)
+        ])
+    }
+    
+    // Add this method to control the selection state
+    func setSelectionMode(_ isSelectionMode: Bool, isSelected: Bool = false) {
+        isInSelectionMode = isSelectionMode
+        
+        if isSelectionMode {
+            downloadButton.isHidden = true
+            selectionIndicator.isHidden = false
+            selectionIndicator.image = UIImage(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+        } else {
+            downloadButton.isHidden = false
+            selectionIndicator.isHidden = true
+        }
     }
     
     func updatePlaybackProgress(progress: Float, remainingTime: TimeInterval) {
