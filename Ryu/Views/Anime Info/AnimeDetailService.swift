@@ -49,14 +49,14 @@ class AnimeDetailService {
             if href.hasPrefix("https://cache.libria.fun/videos/media/ts/") {
                 let components = href.components(separatedBy: "/")
                 if let tsIndex = components.firstIndex(of: "ts"),
-                   tsIndex + 1 < components.count,
-                   // Extract only digits for the ID
-                   let extractedId = components[tsIndex + 1].components(separatedBy: CharacterSet.decimalDigits.inverted).joined() {
-                   if !extractedId.isEmpty {
-                        fullUrlString = baseUrl + extractedId
+                   tsIndex + 1 < components.count {
+                    // Extract only digits for the ID
+                    let extractedId = components[tsIndex + 1].components(separatedBy: CharacterSet.decimalDigits.inverted).joined() // Fixed conditional binding
+                    if !extractedId.isEmpty {
+                         fullUrlString = baseUrl + extractedId
                     } else {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract Anilibria ID (empty after filtering)."])))
-                        return
+                         completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract Anilibria ID (empty after filtering)."])))
+                         return
                     }
                 } else {
                     completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract Anilibria ID."])))
@@ -181,7 +181,7 @@ class AnimeDetailService {
                     fetchAniListEpisodes(from: href) { result in // Pass original href
                         switch result {
                         case .success(let episodes):
-                            let details = AnimeDetail(aliases: aliases, synopsis: description, airdate: airdate, stars: stars, episodes: episodes)
+                            let details = AnimeDetail(aliases: aliases, synopsis: synopsis, airdate: airdate, stars: stars, episodes: episodes)
                             completion(.success(details))
                         case .failure(let error):
                             completion(.failure(error))
@@ -248,7 +248,7 @@ class AnimeDetailService {
                               aliases = try document.select("div.seriesDetails span > i").first()?.text() ?? "" // Get original title
                               synopsis = try document.select("p.seri_des").text()
                               airdate = try document.select("div.genres + div > span").eq(1).text() // Get year
-                              stars = try document.select("div.rating পঞ্চ > span").first()?.text() ?? "" // Get rating score
+                              stars = try document.select("div.rating span > span").first()?.text() ?? "" // Get rating score (Corrected selector)
                           case .tokyoinsider:
                               aliases = "" // No clear alias field usually
                               synopsis = try document.select("div#synopsis > p").text() // More specific selector
@@ -349,22 +349,8 @@ class AnimeDetailService {
 
                      let episodeNumber = "\(number)"
                      // Construct the href needed for *fetching sources*
-                     // The href should include the base anime ID and the episode parameter
-                     let baseAnimeId: String
-                     if let watchRange = href.range(of: "/watch/") {
-                         let potentialIdPart = String(href[watchRange.upperBound...])
-                         baseAnimeId = String(potentialIdPart.split(separator: "?")[0])
-                     } else if let infoRange = href.range(of: "/info?id=") {
-                          baseAnimeId = String(href[infoRange.upperBound...])
-                      } else if !href.contains("/") {
-                          baseAnimeId = href
-                      } else {
-                           baseAnimeId = "unknown-anime-id" // Fallback or error
-                       }
-
-                     // Construct the source fetch URL: Need base ID and episode ID
-                     // Example: https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=steinsgate-3?ep=13499&category=sub&server=vidstreaming
-                      // The episodeId from the episodes endpoint seems to be the combined ID + ep param
+                     // The episodeId from the episodes endpoint seems to be the parameter needed for the source fetch
+                     // Example source fetch URL: https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=tv/steinsgate-3?ep=13499
                      let hrefForSources = "https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id=\(episodeId)"
 
                      return Episode(number: episodeNumber, href: hrefForSources, downloadUrl: "") // href is now the source fetch URL
@@ -381,7 +367,7 @@ class AnimeDetailService {
      // Common Episode Fetching Logic (with Source Differentiation)
     private static func fetchEpisodes(document: Document, for source: MediaSource, href: String) -> [Episode] {
         var episodes: [Episode] = []
-        do {
+        do { // Add do-catch block here
             var episodeElements: Elements?
             var downloadUrlElement: String? = nil // Make optional
             let baseURL = href // Use the provided href as the base for resolving relative paths
@@ -411,38 +397,40 @@ class AnimeDetailService {
             case .animesrbija:
                 episodeElements = try document.select("ul.anime-episodes-holder li.anime-episode-item")
             case .aniworld:
-                let seasonUrls = try extractSeasonUrls(document: document)
-                let sortedSeasonUrls = seasonUrls.sorted { pair1, pair2 in
-                    let season1 = pair1.0
-                    let season2 = pair2.0
-                    if season1 == "F" { return false } // Film comes last
-                    if season2 == "F" { return true }
-                    return (Int(season1.dropFirst()) ?? 0) < (Int(season2.dropFirst()) ?? 0)
-                }
-                let group = DispatchGroup()
-                var allEpisodes: [Episode] = []
-                let queue = DispatchQueue(label: "com.aniworld.fetch", attributes: .concurrent)
-                let syncQueue = DispatchQueue(label: "com.aniworld.sync") // For thread-safe appending
-                for (seasonNumber, seasonUrl) in sortedSeasonUrls {
-                    group.enter()
-                    queue.async {
-                        defer { group.leave() } // Ensure leave is always called
-                        do {
-                            if let seasonEpisodes = try? fetchAniWorldSeasonEpisodes(seasonUrl: seasonUrl, seasonNumber: seasonNumber) {
-                                syncQueue.async { // Safely append to shared array
-                                    allEpisodes.append(contentsOf: seasonEpisodes)
-                                }
-                            }
-                        }
-                        // Ignore errors for individual seasons to get best effort
-                    }
-                }
-                group.wait() // Wait for all season fetches to complete
-                // Sort numerically based on extracted episode number after SxE format
-                return allEpisodes.sorted {
-                     $0.episodeNumber < $1.episodeNumber
-                 }.uniqued(by: \.number) // Keep unique episode numbers
+                 // Move the AniWorld fetching logic here, inside the do-catch
+                 let seasonUrls = try extractSeasonUrls(document: document)
+                 let sortedSeasonUrls = seasonUrls.sorted { pair1, pair2 in
+                     let season1 = pair1.0
+                     let season2 = pair2.0
+                     if season1 == "F" { return false } // Film comes last
+                     if season2 == "F" { return true }
+                     return (Int(season1.dropFirst()) ?? 0) < (Int(season2.dropFirst()) ?? 0)
+                 }
+                 let group = DispatchGroup()
+                 var allEpisodes: [Episode] = []
+                 let queue = DispatchQueue(label: "com.aniworld.fetch", attributes: .concurrent)
+                 let syncQueue = DispatchQueue(label: "com.aniworld.sync") // For thread-safe appending
 
+                 for (seasonNumber, seasonUrl) in sortedSeasonUrls {
+                     group.enter()
+                     queue.async {
+                         defer { group.leave() } // Ensure leave is always called
+                         do {
+                             if let seasonEpisodes = try? fetchAniWorldSeasonEpisodes(seasonUrl: seasonUrl, seasonNumber: seasonNumber) {
+                                 syncQueue.async { // Safely append to shared array
+                                     allEpisodes.append(contentsOf: seasonEpisodes)
+                                 }
+                             }
+                         } catch {
+                              print("Error fetching AniWorld season \(seasonNumber): \(error)")
+                          }
+                     }
+                 }
+                 group.wait() // Wait for all season fetches to complete
+                 // Sort numerically based on extracted episode number after SxE format
+                 return allEpisodes.sorted {
+                      $0.episodeNumber < $1.episodeNumber
+                  }.uniqued(by: \.number) // Keep unique episode numbers
             case .tokyoinsider:
                 episodeElements = try document.select("div.episode a[href*='/episode/']") // Select only episode links
             case .anivibe, .animebalkan:
@@ -455,7 +443,8 @@ class AnimeDetailService {
                            let videoPlayerContent = String(rawHtml[startIndex..<endIndex])
                            if let episodesStart = videoPlayerContent.range(of: "episodes=\"")?.upperBound,
                               let episodesEnd = videoPlayerContent[episodesStart...].range(of: "\"")?.lowerBound {
-                                let episodesJson = String(videoPlayerContent[episodesStart..<episodesEnd]).replacingOccurrences(of: """, with: "\"") // Corrected replacement
+                                // Corrected replacingOccurrences call
+                                let episodesJson = String(videoPlayerContent[episodesStart..<episodesEnd]).replacingOccurrences(of: """, with: "\"")
                                 if let episodesData = episodesJson.data(using: .utf8),
                                    let episodesList = try? JSONSerialization.jsonObject(with: episodesData) as? [[String: Any]] {
                                      episodes = episodesList.compactMap { episodeDict in
@@ -477,8 +466,8 @@ class AnimeDetailService {
             case .animeflv:
                  do {
                       let rawHtml = try document.html()
-                      // Updated Regex to capture both episode number and ID
-                      let pattern = #"\["(\d+)","([^"]+)"\]"# // Capture number and the string ID
+                      // Corrected Regex with proper escaping
+                       let pattern = "\\[\"(\\d+)\",\"([^\"]+)\"\\]" // Capture number and the string ID
                       let regex = try NSRegularExpression(pattern: pattern)
                       let matches = regex.matches(in: rawHtml, range: NSRange(rawHtml.startIndex..., in: rawHtml))
 
@@ -510,8 +499,8 @@ class AnimeDetailService {
             case .anibunker:
                 episodeElements = try document.select("div.eps-display a")
             // API sources handled elsewhere
-            case .anilist, .anilibria:
-                return []
+             case .anilist, .anilibria:
+                 return [] // Explicitly return empty for API sources
             }
 
             // Common HTML element parsing (refined)
@@ -591,7 +580,7 @@ class AnimeDetailService {
                  }
             }
 
-        } catch {
+        } catch { // Catch errors from the outer try block
             print("Error parsing episodes for source \(source.rawValue): \(error.localizedDescription)")
         }
         // Sort numerically after collecting all episodes
