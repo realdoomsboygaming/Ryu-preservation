@@ -1,12 +1,6 @@
-//
-//  Sources.swift
-//  Ryu
-//
-//  Created by Francesco on 23/06/24.
-//
-
 import Foundation
 
+// Enum defining the different media sources Ryu can interact with.
 enum MediaSource: String {
     case animeWorld = "AnimeWorld"
     case gogoanime = "GoGoAnime"
@@ -14,7 +8,7 @@ enum MediaSource: String {
     case animefire = "AnimeFire"
     case kuramanime = "Kuramanime"
     case anime3rb = "Anime3rb"
-    case hianime = "HiAnime"
+    case hianime = "HiAnime" 
     case anilibria = "Anilibria"
     case animesrbija = "AnimeSRBIJA"
     case aniworld = "AniWorld"
@@ -27,6 +21,7 @@ enum MediaSource: String {
 }
 
 extension MediaSource {
+    // Provides a user-friendly display name for each source.
     var displayName: String {
         switch self {
         case .animeWorld: return "AnimeWorld"
