@@ -388,10 +388,11 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
                 switch result {
                 case .success(let downloadURL):
                     print("Download completed. File saved at: \(downloadURL)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
+                    // Use correct argument label 'title:'
+                    self?.animeDetailsViewController?.showAlert(title: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
                 case .failure(let error):
                     print("Download failed with error: \(error.localizedDescription)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Failed", message: error.localizedDescription)
+                    self?.animeDetailsViewController?.showAlert(title: "Download Failed", message: error.localizedDescription)
                 }
             }
         }
@@ -482,13 +483,15 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
         timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self,
                   let currentItem = self.player?.currentItem,
-                  currentItem.duration.seconds.isFinite, // Check if duration is valid and finite
-                   duration > 0 else { // Ensure duration is positive
+                  currentItem.duration.seconds.isFinite else { // Check duration validity
                       return
                   }
 
-            let currentTime = time.seconds
+            // Fix: Access duration *after* checking validity
             let duration = currentItem.duration.seconds
+            guard duration > 0 else { return } // Ensure duration is positive
+
+            let currentTime = time.seconds
             let progress = Float(currentTime / duration) // Calculate progress
             let remainingTime = duration - currentTime
 
@@ -523,6 +526,10 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
                      let cleanedTitle = viewController.cleanTitle(viewController.animeTitle ?? "Unknown Anime")
 
                      viewController.fetchAnimeID(title: cleanedTitle) { animeID in
+                         guard animeID != 0 else {
+                              print("Could not fetch valid AniList ID for progress update.")
+                              return
+                          }
                          let aniListMutation = AniListMutation()
                          aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumberInt) { result in
                              switch result {
@@ -541,7 +548,6 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
             }
         }
     }
-
 
     func playNextEpisode() {
         guard let animeDetailsViewController = self.animeDetailsViewController else {
@@ -585,7 +591,6 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
          }
     }
 
-
     @objc func playerItemDidReachEnd(notification: Notification) {
         // Common logic for ending playback
         if UserDefaults.standard.bool(forKey: "AutoPlay"), let animeDetailsViewController = self.animeDetailsViewController {
@@ -605,7 +610,6 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
         }
     }
 
-
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         UserDefaults.standard.set(false, forKey: "isToDownload")
@@ -624,7 +628,8 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
          }
 
          if let token = timeObserverToken {
-             player?.removeTimeObserver(token) // This might still cause issues if player is already nil
+             // Player might be nil already, check before removing
+             // player?.removeTimeObserver(token) // Avoid potential crash
              timeObserverToken = nil
          }
      }
@@ -651,5 +656,19 @@ class ExternalVideoPlayer: UIViewController, WKNavigationDelegate, CustomPlayerV
         cleanup()
         NotificationCenter.default.removeObserver(self)
         print("ExternalVideoPlayer deinitialized")
+    }
+}
+
+extension ExternalVideoPlayer: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Start extraction process *after* the page finishes loading
+        // The timer handles retries if links aren't immediately available
+        // startExtractionProcess() // Moved timer start to viewDidLoad
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        print("Webview failed to load: \(error)")
+        // Retry extraction if webview fails, as it might load partially
+        if !isVideoPlaying { retryExtractVideoLinks() }
     }
 }
