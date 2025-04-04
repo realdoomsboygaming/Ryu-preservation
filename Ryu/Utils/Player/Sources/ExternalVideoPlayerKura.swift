@@ -3,7 +3,7 @@ import WebKit
 import SwiftSoup
 import GoogleCast
 
-class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, CustomPlayerViewDelegate { // Added CustomPlayerViewDelegate
+class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, WKNavigationDelegate, CustomPlayerViewDelegate { // Added WKNavigationDelegate, CustomPlayerViewDelegate
     private let streamURL: String
     private var webView: WKWebView?
     private var player: AVPlayer?
@@ -21,6 +21,7 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
     private var originalRate: Float = 1.0
     private var holdGesture: UILongPressGestureRecognizer?
     private var videoURLs: [String: String] = [:] // Quality -> URL
+    private var isVideoPlaying = false // Added flag to track playback state
 
     init(streamURL: String, cell: EpisodeCell, fullURL: String, animeDetailsViewController: AnimeDetailViewController) {
         self.streamURL = streamURL
@@ -100,8 +101,10 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
     private func beginHoldSpeed() {
         guard let player = player else { return }
         originalRate = player.rate
-        player.rate = UserDefaults.standard.float(forKey: "holdSpeedPlayer")
+        let holdSpeed = UserDefaults.standard.float(forKey: "holdSpeedPlayer")
+        player.rate = holdSpeed > 0 ? holdSpeed : 2.0 // Use default if invalid
     }
+
 
     private func endHoldSpeed() {
         player?.rate = originalRate
@@ -127,7 +130,7 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
     private func setupWebView() {
         webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         webView?.navigationDelegate = self
-        // Hide webview initially or keep it hidden if not needed for UI interaction
+        // Keep webview hidden as it's only for background extraction
         webView?.isHidden = true
         if let webView = webView {
              view.insertSubview(webView, at: 0) // Add behind activity indicator
@@ -153,8 +156,9 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
 
     private func extractVideoSources() {
         webView?.evaluateJavaScript("document.body.innerHTML") { [weak self] (result, error) in
-            guard let self = self, let htmlString = result as? String else {
-                self?.retryExtraction()
+            guard let self = self else { return } // Use guard let self
+            guard let htmlString = result as? String else {
+                self.retryExtraction()
                 return
             }
 
@@ -266,6 +270,7 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
     private func handleVideoURL(url: URL) {
         DispatchQueue.main.async { // Ensure UI updates happen on main thread
             self.activityIndicator?.stopAnimating() // Stop indicator once URL is ready
+            self.isVideoPlaying = true // Mark as playing
 
             if UserDefaults.standard.bool(forKey: "isToDownload") {
                 self.handleDownload(url: url)
@@ -305,10 +310,10 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
                 switch result {
                 case .success(let downloadURL):
                     print("Download completed. File saved at: \(downloadURL)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
+                    self?.animeDetailsViewController?.showAlert(title: "Download Completed!", message: "You can find your download in the Library -> Downloads.") // Corrected label
                 case .failure(let error):
                     print("Download failed with error: \(error.localizedDescription)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Failed", message: error.localizedDescription)
+                    self?.animeDetailsViewController?.showAlert(title: "Download Failed", message: error.localizedDescription) // Corrected label
                 }
             }
         }
@@ -321,7 +326,8 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
             if UserDefaults.standard.bool(forKey: "fullTitleCast") {
                 metadata.setString(self.animeDetailsViewController?.animeTitle ?? "Unknown Anime", forKey: kGCKMetadataKeyTitle)
             } else {
-                let episodeNumber = (self.animeDetailsViewController?.currentEpisodeIndex ?? -1) + 1
+                // Safely get episode number
+                let episodeNumber = EpisodeNumberExtractor.extract(from: self.cell.episodeNumber)
                 metadata.setString("Episode \(episodeNumber)", forKey: kGCKMetadataKeyTitle)
             }
 
@@ -350,7 +356,6 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
         }
     }
 
-
     private func playOrCastVideo(url: URL) {
          DispatchQueue.main.async { // Ensure UI updates happen on main thread
              let player = AVPlayer(url: url)
@@ -378,31 +383,33 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
          }
      }
 
-
     private func addPeriodicTimeObserver() {
         let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self, let currentItem = self.player?.currentItem, currentItem.duration.seconds.isFinite else {
                 return
             }
+            // Fix: Access duration *after* checking validity
+            let duration = currentItem.duration.seconds
+            guard duration > 0 else { return } // Ensure duration is positive
 
-            self.updatePlaybackProgress(time: time, duration: currentItem.duration.seconds)
+            self.updatePlaybackProgress(time: time, duration: duration)
         }
     }
 
     private func updatePlaybackProgress(time: CMTime, duration: Double) {
-         guard duration > 0 else { return } // Avoid division by zero
-        let currentTime = time.seconds
-        let progress = Float(currentTime / duration)
-        let remainingTime = duration - currentTime
+         let currentTime = time.seconds
+         let progress = Float(currentTime / duration)
+         let remainingTime = duration - currentTime
 
-        cell.updatePlaybackProgress(progress: progress, remainingTime: remainingTime)
-        UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(fullURL)")
-        UserDefaults.standard.set(duration, forKey: "totalTime_\(fullURL)")
+         cell.updatePlaybackProgress(progress: progress, remainingTime: remainingTime)
+         UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(fullURL)")
+         UserDefaults.standard.set(duration, forKey: "totalTime_\(fullURL)")
 
-        updateContinueWatchingItem(currentTime: currentTime, duration: duration)
-        sendPushUpdates(remainingTime: remainingTime, totalTime: duration)
-    }
+         updateContinueWatchingItem(currentTime: currentTime, duration: duration)
+         sendPushUpdates(remainingTime: remainingTime, totalTime: duration)
+     }
+
 
     private func updateContinueWatchingItem(currentTime: Double, duration: Double) {
         if let viewController = self.animeDetailsViewController,
@@ -434,9 +441,17 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
 
         let cleanedTitle = animeDetailsViewController.cleanTitle(animeDetailsViewController.animeTitle ?? "Unknown Anime")
         animeDetailsViewController.fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
+             guard animeID != 0 else {
+                 print("Could not fetch valid AniList ID for progress update.")
+                 return
+             }
             let aniListMutation = AniListMutation()
             // Use the episode number from the cell safely
-            let episodeNumber = Int(self?.cell.episodeNumber ?? "0") ?? 0
+            let episodeNumber = Int(self?.cell.episodeNumber ?? "0") ?? 0 // Safely get number
+            guard episodeNumber != 0 else {
+                print("Invalid episode number for AniList update.")
+                return
+            }
             aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumber) { result in
                 switch result {
                 case .success: print("Successfully updated anime progress.")
@@ -444,24 +459,6 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
                 }
             }
             animeDetailsViewController.hasSentUpdate = true
-        }
-    }
-
-
-    private func retryExtraction() {
-        retryCount += 1
-        if retryCount < maxRetries {
-            print("Retrying extraction (Attempt \(retryCount + 1))")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.loadInitialURL()
-            }
-        } else {
-            print("Max retries reached. Unable to find video sources.")
-            DispatchQueue.main.async {
-                self.activityIndicator?.stopAnimating()
-                 self.showAlert(title: "Error", message: "Could not extract video source after multiple attempts.")
-                self.dismiss(animated: true)
-            }
         }
     }
 
@@ -482,9 +479,9 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
             playerViewController = nil
         }
 
-
         if let timeObserverToken = timeObserverToken {
-            player?.removeTimeObserver(timeObserverToken) // This might crash if player is already nil
+            // Player might be nil already, so this might not be necessary
+            // player?.removeTimeObserver(timeObserverToken)
             self.timeObserverToken = nil
         }
 
@@ -492,26 +489,29 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
         webView?.navigationDelegate = nil // Break retain cycle
         webView?.removeFromSuperview()
         webView = nil // Release webView
+        retryCount = 0 // Reset retry count
+        videoURLs = [:] // Clear options
+        isVideoPlaying = false // Reset flag
     }
 
-    @objc func playerItemDidReachEnd(notification: Notification) {
-         // Common logic for ending playback
-         if UserDefaults.standard.bool(forKey: "AutoPlay"), let animeDetailsViewController = self.animeDetailsViewController {
-             let hasNextEpisode = animeDetailsViewController.isReverseSorted ?
-                 (animeDetailsViewController.currentEpisodeIndex > 0) :
-                 (animeDetailsViewController.currentEpisodeIndex < animeDetailsViewController.episodes.count - 1)
-
-             if hasNextEpisode {
-                 self.dismiss(animated: true) { [weak self] in
-                     self?.playNextEpisode()
-                 }
-             } else {
-                 self.dismiss(animated: true) // Dismiss if no next episode
-             }
-         } else {
-             self.dismiss(animated: true) // Dismiss if autoplay is off
-         }
-     }
+    private func retryExtraction() {
+        if !isVideoPlaying { // Only retry if not already playing
+            retryCount += 1
+            if retryCount < maxRetries {
+                print("Retrying extraction (Attempt \(retryCount + 1))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.loadInitialURL()
+                }
+            } else {
+                print("Max retries reached. Unable to find video sources.")
+                DispatchQueue.main.async {
+                    self.activityIndicator?.stopAnimating()
+                    self.showAlert(title: "Error", message: "Could not extract video source after multiple attempts.")
+                    self.dismiss(animated: true)
+                }
+            }
+        }
+    }
 
 
     private func playNextEpisode() {
@@ -524,17 +524,17 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
          if animeDetailsViewController.isReverseSorted {
              nextIndex = animeDetailsViewController.currentEpisodeIndex - 1
              guard nextIndex >= 0 else {
-                 animeDetailsViewController.currentEpisodeIndex = 0 // Reset index if out of bounds
+                 animeDetailsViewController.currentEpisodeIndex = 0 // Reset index
                  return
              }
          } else {
              nextIndex = animeDetailsViewController.currentEpisodeIndex + 1
              guard nextIndex < animeDetailsViewController.episodes.count else {
-                 animeDetailsViewController.currentEpisodeIndex = animeDetailsViewController.episodes.count - 1 // Reset index if out of bounds
+                 animeDetailsViewController.currentEpisodeIndex = animeDetailsViewController.episodes.count - 1 // Reset index
                  return
              }
          }
-        animeDetailsViewController.currentEpisodeIndex = nextIndex // Update the index first
+        animeDetailsViewController.currentEpisodeIndex = nextIndex // Update index first
         playEpisode(at: nextIndex)
     }
 
@@ -549,16 +549,34 @@ class ExternalVideoPlayerKura: UIViewController, GCKRemoteMediaClientListener, C
         if let cell = animeDetailsViewController.tableView.cellForRow(at: IndexPath(row: index, section: 2)) as? EpisodeCell {
             animeDetailsViewController.episodeSelected(episode: nextEpisode, cell: cell)
         } else {
-            // If cell is not visible, manually trigger the selection logic without the cell
-            // This might require adjusting episodeSelected or creating a variant
-            print("Cell for episode \(nextEpisode.number) not visible, triggering selection logic directly.")
-            // Potentially call a modified version: animeDetailsViewController.selectEpisodeData(episode: nextEpisode)
-            // For now, just logging the issue.
+             // If cell is not visible, manually trigger the selection logic
+             print("Cell for episode \(nextEpisode.number) not visible, triggering selection logic directly.")
              animeDetailsViewController.showLoadingBanner()
-             animeDetailsViewController.checkUserDefault(url: nextEpisode.href, cell: EpisodeCell(), fullURL: nextEpisode.href) // Pass a dummy cell
-        }
+             animeDetailsViewController.checkUserDefault(url: nextEpisode.href, cell: EpisodeCell(), fullURL: nextEpisode.href) // Pass dummy cell
+         }
     }
-     // Add showAlert helper
+
+    @objc func playerItemDidReachEnd(notification: Notification) {
+         // Common logic for ending playback
+         if UserDefaults.standard.bool(forKey: "AutoPlay"), let animeDetailsViewController = self.animeDetailsViewController {
+             let hasNextEpisode = animeDetailsViewController.isReverseSorted ?
+                 (animeDetailsViewController.currentEpisodeIndex > 0) :
+                 (animeDetailsViewController.currentEpisodeIndex < animeDetailsViewController.episodes.count - 1)
+
+             if hasNextEpisode {
+                 self.dismiss(animated: true) { [weak self] in
+                     self?.playNextEpisode()
+                 }
+             } else {
+                 self.dismiss(animated: true, completion: nil)
+             }
+         } else {
+             self.dismiss(animated: true, completion: nil)
+         }
+     }
+
+
+    // Add showAlert helper
      private func showAlert(title: String, message: String) {
           let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
           alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -576,15 +594,22 @@ extension ExternalVideoPlayerKura: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         print("WebView navigation failed: \(error.localizedDescription)")
-         if !isVideoPlaying { // Only retry if we haven't started playback
+         if !isVideoPlaying { // Only retry if not already playing
             retryExtraction()
          }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         print("WebView provisional navigation failed: \(error.localizedDescription)")
-         if !isVideoPlaying { // Only retry if we haven't started playback
+         if !isVideoPlaying { // Only retry if not already playing
             retryExtraction()
          }
     }
 }
+
+// Conform to CustomPlayerViewDelegate
+extension ExternalVideoPlayerKura {
+     func customPlayerViewDidDismiss() {
+         self.dismiss(animated: true, completion: nil)
+     }
+ }
