@@ -3,25 +3,6 @@ import Alamofire
 import SwiftSoup // Ensure SwiftSoup is imported
 
 // --- Data Models ---
-struct Episode: Hashable, Codable {
-    let id: String?         // Unique ID for the episode (especially for API sources like HiAnime)
-    let number: String      // Episode number (e.g., "1", "12.5", "OVA 1")
-    let title: String?      // Optional title of the episode
-    let href: String        // URL to the watch page or unique identifier part
-    let downloadUrl: String? // Optional direct download URL
-
-    // Conformance for Set/DiffableDataSource
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(href) // Use href as primary unique identifier
-        hasher.combine(number)
-    }
-
-    static func == (lhs: Episode, rhs: Episode) -> Bool {
-        return lhs.href == rhs.href && lhs.number == rhs.number
-    }
-}
-
-// Structure for the final details passed to the AnimeDetailViewController
 struct AnimeDetail {
     let aliases: String
     let synopsis: String
@@ -30,46 +11,36 @@ struct AnimeDetail {
     let episodes: [Episode]
 }
 
-// Structure to represent video links extracted for AniWorld
-struct VideoLink {
-    let url: String
-    let language: VideoLanguage
-    let host: VideoHost
-}
-
-// Enum to represent video language options for AniWorld
-enum VideoLanguage: Int {
-    case germanDub = 1
-    case englishSub = 2
-    case germanSub = 3
-
-    var description: String {
-        switch self {
-        case .germanDub: return "German (Dubbed)"
-        case .englishSub: return "English (Subtitled)"
-        case .germanSub: return "German (Subtitled)"
-        }
+// Response model for Anilibria API
+struct AnilibriaResponse: Decodable {
+    let names: Names
+    let description: String
+    let season: Season
+    let player: Player
+    let inFavorites: Int
+    
+    struct Names: Decodable {
+        let ru: String
+        let en: String
     }
-}
-
-// Enum to represent video host options for AniWorld
-enum VideoHost {
-    case vidoza
-    case voe
-    case vidmoly
-
-    var description: String {
-        switch self {
-        case .vidoza: return "Vidoza"
-        case .voe: return "VOE"
-        case .vidmoly: return "Vidmoly"
-        }
+    
+    struct Season: Decodable {
+        let year: Int
+        let string: String
     }
-}
-
-extension Collection {
-    subscript(safe index: Index) -> Element? {
-        return indices.contains(index) ? self[index] : nil
+    
+    struct Player: Decodable {
+        let list: [String: Episode]
+        
+        struct Episode: Decodable {
+            let hls: HLS
+            
+            struct HLS: Decodable {
+                let fhd: String?
+                let hd: String?
+                let sd: String?
+            }
+        }
     }
 }
 
@@ -98,7 +69,7 @@ class AnimeDetailService {
             let animeId = href.split(separator: "/").last.map(String.init) ?? href
 
             guard !animeId.isEmpty else {
-                completion(.failure(AniwatchError.invalidURL))
+                completion(.failure(NSError(domain: "AnimeDetailService", code: -2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
                 return
             }
 
@@ -116,9 +87,7 @@ class AnimeDetailService {
                             // Construct the relative watch URL path
                             let watchHref = "/watch/\(aniwatchDetails.id)?ep=\(aniwatchEpisode.id ?? "")"
                             return Episode(
-                                id: aniwatchEpisode.id,
                                 number: aniwatchEpisode.number,
-                                title: nil,
                                 href: watchHref, // Use the watch page path as href
                                 downloadUrl: "" // Download URL not provided here
                             )
@@ -213,9 +182,7 @@ class AnimeDetailService {
                     let hlsUrl = value.hls.fhd ?? value.hls.hd ?? value.hls.sd ?? ""
                     let streamUrl = hlsUrl.starts(with: "http") ? hlsUrl : "https://cache.libria.fun\(hlsUrl)"
                     return Episode(
-                        id: nil,
                         number: episodeNumber, 
-                        title: nil,
                         href: streamUrl, 
                         downloadUrl: ""
                     )
@@ -384,19 +351,16 @@ class AnimeDetailService {
             }
 
             // Generic parsing loop
-            episodes = try episodeElements.compactMap { element -> Episode? in
+            episodes = try episodeElements.array().compactMap { element -> Episode? in
                 guard let episodeTextRaw = try? element.text(), !episodeTextRaw.isEmpty,
                       let hrefPath = try? element.attr("href"), !hrefPath.isEmpty else {
                     return nil
                 }
                 let episodeNumber = extractEpisodeNumber(from: episodeTextRaw, for: source)
                 let fullHref = hrefPath.starts(with: "http") ? hrefPath : baseURL + hrefPath
-                // Ensure Episode init matches your struct
                 return Episode(
-                    id: nil,
-                    number: episodeNumber, 
-                    title: nil,
-                    href: fullHref, 
+                    number: episodeNumber,
+                    href: fullHref,
                     downloadUrl: ""
                 )
             }
@@ -467,8 +431,8 @@ class AnimeDetailService {
             let rawHtml = try document.html()
             if let videoPlayerElement = try document.select("video-player").first(),
                let episodesJsonEncoded = try? videoPlayerElement.attr("episodes") {
-                // Decode HTML entities like "
-                let episodesJson = episodesJsonEncoded.replacingOccurrences(of: """, with: "\"")
+                // Decode HTML entities like &quot;
+                let episodesJson = episodesJsonEncoded.replacingOccurrences(of: "&quot;", with: "\"")
 
                 if let episodesData = episodesJson.data(using: .utf8),
                    let episodesList = try? JSONSerialization.jsonObject(with: episodesData) as? [[String: Any]] {
@@ -478,23 +442,16 @@ class AnimeDetailService {
                             return nil
                         }
                         let hrefFull = baseURL + linkPath
-                        // Adjust init based on your Episode struct
                         return Episode(
-                            id: nil,
                             number: number, 
-                            title: nil,
                             href: hrefFull, 
                             downloadUrl: ""
                         )
                     }
-                } else { 
-                    print("Failed to parse episodes JSON from AnimeUnity attribute.") 
                 }
-            } else { 
-                print("Could not find video-player tag or episodes attribute in AnimeUnity HTML.") 
             }
-        } catch { 
-            print("Error parsing AnimeUnity episodes: \(error)") 
+        } catch {
+            print("Error parsing AnimeUnity episodes: \(error)")
         }
         return []
     }
@@ -530,11 +487,8 @@ class AnimeDetailService {
                                     guard episodePair.count == 2 else { return nil }
                                     let episodeNumber = String(format: "%.0f", episodePair[0])
                                     let href = "\(verBaseURL.replacingOccurrences(of: "/anime/", with: "/ver/"))\(animeSlug)-\(episodeNumber)"
-                                    // Adjust init based on your Episode struct
                                     return Episode(
-                                        id: nil,
                                         number: episodeNumber, 
-                                        title: nil,
                                         href: href, 
                                         downloadUrl: ""
                                     )
@@ -574,12 +528,9 @@ class AnimeDetailService {
                     let formattedEpisode = "\(episodeNumber)"
                     guard formattedEpisode != "0" else { continue }
                     let episodeHref = "https://anitaku.to/\(animeSlug)-episode-\(episodeNumber)"
-                    // Adjust init based on your Episode struct
                     episodes.append(Episode(
-                        id: nil,
-                        number: formattedEpisode, 
-                        title: nil,
-                        href: episodeHref, 
+                        number: formattedEpisode,
+                        href: episodeHref,
                         downloadUrl: ""
                     ))
                 }
