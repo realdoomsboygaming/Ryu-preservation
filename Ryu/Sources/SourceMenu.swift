@@ -1,10 +1,3 @@
-//
-//  SourceMenu.swift
-//  Ryu
-//
-//  Created by Francesco on 05/07/24.
-//
-
 import UIKit
 
 class SourceMenu {
@@ -20,7 +13,7 @@ class SourceMenu {
                 ("Kuramanime", .kuramanime, "🇮🇩"),
                 ("Anime3rb", .anime3rb, "🇸🇦"),
                 ("Anilibria", .anilibria, "🇷🇺"),
-                ("HiAnime", .hianime, "🇺🇸"),
+                ("AniList", .anilist, "🇺🇸"),
                 ("AnimeSRBIJA", .animesrbija, "🇭🇷"),
                 ("AniWorld", .aniworld, "🇩🇪"),
                 ("TokyoInsider", .tokyoinsider, "🇺🇸"),
@@ -40,7 +33,8 @@ class SourceMenu {
                     completion?()
                     delegate?.didSelectNewSource()
                 }
-                setSourceImage(for: action, named: title)
+                // Assuming you will rename the asset image as well
+                setSourceImage(for: action, named: title == "AniList" ? "AniList" : title)
                 alertController.addAction(action)
             }
             
