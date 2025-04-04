@@ -36,6 +36,8 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     private var downloadButton: UIBarButtonItem!
     private var selectButton: UIBarButtonItem!
     private var cancelButton: UIBarButtonItem!
+    private var selectAllButton: UIBarButtonItem!
+    private var filterButton: UIBarButtonItem!
     
     func configure(title: String, imageUrl: String, href: String, source: String) {
         self.animeTitle = title
@@ -153,29 +155,226 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
         downloadButton = UIBarButtonItem(title: "Download", style: .plain, target: self, action: #selector(downloadSelectedEpisodes))
         cancelButton = UIBarButtonItem(title: "Cancel", style: .plain, target: self, action: #selector(toggleSelectMode))
-        
+    
+        // Create new buttons for enhanced selection mode
+        let selectAllButton = UIBarButtonItem(title: "Select All", style: .plain, target: self, action: #selector(selectAllEpisodes))
+    
+        // Create filter button with funnel icon
+        let filterButton = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal.decrease"), style: .plain, target: self, action: #selector(showFilterOptions))
+    
         // Set initial right bar button items
-        navigationItem.rightBarButtonItems = [selectButton]
-        
-        // Set downloadButton initially disabled
-        downloadButton.isEnabled = false
+        navigationItem.rightBarButtonItem = selectButton
+    
+        // Store additional buttons for later use
+        self.selectAllButton = selectAllButton
+        self.filterButton = filterButton
     }
     
     @objc private func toggleSelectMode() {
         isSelectMode = !isSelectMode
         selectedEpisodes.removeAll()
-        
+    
         if isSelectMode {
-            navigationItem.rightBarButtonItems = [cancelButton, downloadButton]
+            // Set left and right bar button items for selection mode
+            navigationItem.leftBarButtonItem = selectAllButton
+            navigationItem.rightBarButtonItems = [cancelButton, filterButton, downloadButton]
             downloadButton.isEnabled = false
         } else {
-            navigationItem.rightBarButtonItems = [selectButton]
+            // Reset to normal mode
+            navigationItem.leftBarButtonItem = nil
+            navigationItem.rightBarButtonItem = selectButton
         }
-        
+    
         // Reload episodes section to update UI
         tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
     }
+
+    @objc private func showFilterOptions() {
+        let alertController = UIAlertController(title: "Filter Episodes", message: nil, preferredStyle: .actionSheet)
     
+        // Select unwatched episodes
+        let selectUnwatchedAction = UIAlertAction(title: "Select Unwatched Episodes", style: .default) { [weak self] _ in
+            self?.selectUnwatchedEpisodes()
+        }
+    
+        // Select watched episodes
+        let selectWatchedAction = UIAlertAction(title: "Select Watched Episodes", style: .default) { [weak self] _ in
+            self?.selectWatchedEpisodes()
+        }
+    
+        // Range selection
+        let rangeSelectionAction = UIAlertAction(title: "Range Selection", style: .default) { [weak self] _ in
+            self?.showRangeSelectionDialog()
+        }
+    
+        // Deselect all
+        let deselectAllAction = UIAlertAction(title: "Deselect All", style: .default) { [weak self] _ in
+            self?.deselectAllEpisodes()
+        }
+    
+        // Cancel action
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+    
+        // Add all actions
+        alertController.addAction(selectUnwatchedAction)
+        alertController.addAction(selectWatchedAction)
+        alertController.addAction(rangeSelectionAction)
+        alertController.addAction(deselectAllAction)
+        alertController.addAction(cancelAction)
+    
+        // Configure for iPad
+        if let popoverController = alertController.popoverPresentationController {
+            popoverController.barButtonItem = filterButton
+        }
+    
+        present(alertController, animated: true, completion: nil)
+    }
+
+    @objc private func showFilterOptions() {
+        let alertController = UIAlertController(title: "Filter Episodes", message: nil, preferredStyle: .actionSheet)
+    
+        // Select unwatched episodes
+        let selectUnwatchedAction = UIAlertAction(title: "Select Unwatched Episodes", style: .default) { [weak self] _ in
+            self?.selectUnwatchedEpisodes()
+        }
+    
+        // Select watched episodes
+        let selectWatchedAction = UIAlertAction(title: "Select Watched Episodes", style: .default) { [weak self] _ in
+            self?.selectWatchedEpisodes()
+        }
+    
+        // Range selection
+        let rangeSelectionAction = UIAlertAction(title: "Range Selection", style: .default) { [weak self] _ in
+            self?.showRangeSelectionDialog()
+        }
+    
+        // Deselect all
+        let deselectAllAction = UIAlertAction(title: "Deselect All", style: .default) { [weak self] _ in
+            self?.deselectAllEpisodes()
+        }
+    
+        // Cancel action
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+    
+        // Add all actions
+        alertController.addAction(selectUnwatchedAction)
+        alertController.addAction(selectWatchedAction)
+        alertController.addAction(rangeSelectionAction)
+        alertController.addAction(deselectAllAction)
+        alertController.addAction(cancelAction)
+    
+        // Configure for iPad
+        if let popoverController = alertController.popoverPresentationController {
+            popoverController.barButtonItem = filterButton
+        }
+    
+        present(alertController, animated: true, completion: nil)
+    }
+
+    private func selectUnwatchedEpisodes() {
+        selectedEpisodes.removeAll()
+    
+        for episode in episodes {
+            let fullURL = episode.href
+            let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(fullURL)")
+            let totalTime = UserDefaults.standard.double(forKey: "totalTime_\(fullURL)")
+        
+            // If no progress or less than 90% complete, consider it unwatched
+            if lastPlayedTime == 0 || totalTime == 0 || (lastPlayedTime / totalTime) < 0.9 {
+                selectedEpisodes.insert(episode)
+            }
+        }
+    
+        downloadButton.isEnabled = !selectedEpisodes.isEmpty
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+
+    private func selectWatchedEpisodes() {
+        selectedEpisodes.removeAll()
+    
+        for episode in episodes {
+            let fullURL = episode.href
+            let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(fullURL)")
+            let totalTime = UserDefaults.standard.double(forKey: "totalTime_\(fullURL)")
+        
+            // If at least 90% complete, consider it watched
+            if totalTime > 0 && (lastPlayedTime / totalTime) >= 0.9 {
+                selectedEpisodes.insert(episode)
+            }
+        }
+    
+        downloadButton.isEnabled = !selectedEpisodes.isEmpty
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+
+    private func showRangeSelectionDialog() {
+        let alertController = UIAlertController(title: "Select Episode Range", message: "Enter start and end episode numbers", preferredStyle: .alert)
+    
+        alertController.addTextField { textField in
+            textField.placeholder = "Start Episode (e.g., 1)"
+            textField.keyboardType = .numberPad
+        }
+    
+        alertController.addTextField { textField in
+            textField.placeholder = "End Episode (e.g., 12)"
+            textField.keyboardType = .numberPad
+        }
+    
+        let selectAction = UIAlertAction(title: "Select", style: .default) { [weak self, weak alertController] _ in
+            guard let self = self,
+                  let startText = alertController?.textFields?[0].text,
+                  let endText = alertController?.textFields?[1].text,
+                  let start = Int(startText),
+                  let end = Int(endText) else {
+                self?.showAlert(title: "Error", message: "Please enter valid episode numbers")
+                return
+            }
+        
+            self.selectEpisodesInRange(start: start, end: end)
+        }
+    
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+    
+        alertController.addAction(selectAction)
+        alertController.addAction(cancelAction)
+    
+        present(alertController, animated: true, completion: nil)
+    }
+
+    private func selectEpisodesInRange(start: Int, end: Int) {
+        // Ensure valid range
+        let validStart = min(start, end)
+        let validEnd = max(start, end)
+    
+        // If all episodes are already selected, deselect them first
+        if selectedEpisodes.count == episodes.count {
+            selectedEpisodes.removeAll()
+        }
+    
+        // Select episodes in range
+        for episode in episodes {
+            if let episodeNum = Int(episode.number.replacingOccurrences(of: "[^0-9]", with: "", options: .regularExpression)),
+               episodeNum >= validStart && episodeNum <= validEnd {
+                selectedEpisodes.insert(episode)
+            }
+        }
+    
+        downloadButton.isEnabled = !selectedEpisodes.isEmpty
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+
+    private func deselectAllEpisodes() {
+        selectedEpisodes.removeAll()
+        downloadButton.isEnabled = false
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+
+    @objc private func selectAllEpisodes() {
+        selectedEpisodes = Set(episodes)
+        downloadButton.isEnabled = !selectedEpisodes.isEmpty
+        tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+    }
+
     @objc private func downloadSelectedEpisodes() {
         guard !selectedEpisodes.isEmpty else { return }
         
