@@ -9,14 +9,211 @@ import UIKit
 import SwiftSoup
 import MobileCoreServices
 import UniformTypeIdentifiers
+import AVKit // Import AVKit for AVPlayerViewControllerDelegate if needed here
+import GoogleCast // Import GoogleCast if GCKRemoteMediaClientListener conformance is here
+
+// Note: Conformance to delegates like GCKRemoteMediaClientListener, AVPlayerViewControllerDelegate, SynopsisCellDelegate, CustomPlayerViewDelegate
+// should typically reside in the main AnimeDetailViewController class declaration, not the extension,
+// as they relate to the ViewController's overall behavior and lifecycle.
+// However, keeping the implementation details of the source handling logic here is fine.
 
 extension AnimeDetailViewController {
+
+    // MARK: - Source Handling Logic
+
+    func handleAniListSource(url: String, cell: EpisodeCell, fullURL: String) {
+        guard let episodeId = extractAniListEpisodeId(from: url) else {
+            print("Could not extract episodeId from URL")
+            hideLoadingBannerAndShowAlert(title: "Error", message: "Could not extract episodeId from URL")
+            return
+        }
+
+        fetchAniListEpisodeOptions(episodeId: episodeId) { [weak self] options in
+            guard let self = self else { return }
+
+            if options.isEmpty {
+                print("No options available for this episode")
+                self.hideLoadingBannerAndShowAlert(title: "Error", message: "No options available for this episode")
+                return
+            }
+
+            let preferredAudio = UserDefaults.standard.string(forKey: "anilistAudioPref") ?? "Always Ask"
+            let preferredServer = UserDefaults.standard.string(forKey: "anilistServerPref") ?? "Always Ask"
+
+            self.selectAudioCategory(options: options, preferredAudio: preferredAudio) { category in
+                guard let servers = options[category], !servers.isEmpty else {
+                    print("No servers available for selected category: \(category)")
+                    self.hideLoadingBannerAndShowAlert(title: "Error", message: "No servers available for '\(category.capitalized)' audio.")
+                    return
+                }
+
+                self.selectServer(servers: servers, preferredServer: preferredServer) { server in
+                    let urls = ["https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id="]
+                    let randomURL = urls.randomElement()!
+                    let finalURL = "\(randomURL)\(episodeId)&category=\(category)&server=\(server)"
+
+                    self.fetchAniListData(from: finalURL) { [weak self] sourceURL, captionURLs in
+                        guard let self = self else { return }
+
+                        self.hideLoadingBanner {
+                            DispatchQueue.main.async {
+                                guard let sourceURL = sourceURL else {
+                                    print("Error extracting source URL")
+                                    self.showAlert(title: "Error", message: "Error extracting source URL")
+                                    return
+                                }
+
+                                self.selectSubtitles(captionURLs: captionURLs) { selectedSubtitleURL in
+                                    let subtitleURL = selectedSubtitleURL ?? URL(string: "https://nosubtitlesfor.you")!
+                                    let selectedPlayer = UserDefaults.standard.string(forKey: "mediaPlayerSelected") ?? "Default"
+                                    let isToDownload = UserDefaults.standard.bool(forKey: "isToDownload")
+
+                                    if isToDownload {
+                                         self.handleDownload(sourceURL: sourceURL, fullURL: fullURL)
+                                     } else {
+                                          switch selectedPlayer {
+                                          case "Custom":
+                                               self.openHiAnimeExperimental(url: sourceURL, subURL: subtitleURL, cell: cell, fullURL: fullURL)
+                                          case "WebPlayer":
+                                                self.startStreamingButtonTapped(withURL: sourceURL.absoluteString, captionURL: subtitleURL.absoluteString, playerType: .playerWeb, cell: cell, fullURL: fullURL)
+                                           case "Infuse", "VLC", "OutPlayer", "nPlayer":
+                                               self.openInExternalPlayer(player: selectedPlayer, url: sourceURL)
+                                           default: // "Default" player
+                                               self.playVideoWithAVPlayer(sourceURL: sourceURL, cell: cell, fullURL: fullURL)
+                                           }
+                                      }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func handleSources(url: String, cell: EpisodeCell, fullURL: String) {
+        guard let requestURL = encodedURL(from: url) else {
+            hideLoadingBannerAndShowAlert(title: "Error", message: "Invalid URL: \(url)")
+            return
+        }
+
+        URLSession.shared.dataTask(with: requestURL) { [weak self] (data, response, error) in
+            guard let self = self else { return }
+
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error fetching video data: \(error.localizedDescription)")
+                    return
+                }
+
+                guard let data = data, let htmlString = String(data: data, encoding: .utf8) else {
+                    self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error parsing video data")
+                    return
+                }
+
+                guard let selectedSource = self.displayedDataSource else {
+                     self.hideLoadingBannerAndShowAlert(title: "Error", message: "Source information missing.")
+                     return
+                 }
+
+                let gogoFetcher = UserDefaults.standard.string(forKey: "gogoFetcher") ?? "Default"
+                var srcURL: URL?
+                var playerTypeOverride: String? = nil
+
+                switch selectedSource {
+                case .gogoanime:
+                    if gogoFetcher == "Default" { srcURL = self.extractIframeSourceURL(from: htmlString) }
+                    else if gogoFetcher == "Secondary" { srcURL = self.extractDownloadLink(from: htmlString) }
+                    playerTypeOverride = gogoFetcher == "Secondary" ? VideoPlayerType.standard : VideoPlayerType.playerGoGo2
+                case .animefire:
+                    srcURL = self.extractDataVideoSrcURL(from: htmlString)
+                    if let fireURL = srcURL {
+                        self.fetchVideoDataAndChooseQuality(from: fireURL.absoluteString) { selectedURL in
+                            guard let finalURL = selectedURL else {
+                                self.hideLoadingBannerAndShowAlert(title: "Error", message: "Failed to get AnimeFire video link.")
+                                return
+                            }
+                            self.hideLoadingBanner { self.playVideo(sourceURL: finalURL, cell: cell, fullURL: fullURL) }
+                        }
+                        return
+                    } else {
+                         self.hideLoadingBannerAndShowAlert(title: "Error", message: "Failed to extract initial AnimeFire URL.")
+                         return
+                     }
+
+                case .animeWorld, .animeheaven, .animebalkan:
+                    srcURL = self.extractVideoSourceURL(from: htmlString)
+                case .kuramanime:
+                     srcURL = URL(string: fullURL)
+                     playerTypeOverride = VideoPlayerType.playerKura
+                 case .animesrbija:
+                     srcURL = self.extractAsgoldURL(from: htmlString)
+                 case .anime3rb:
+                      self.anime3rbGetter(from: htmlString) { finalUrl in
+                          if let url = finalUrl { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
+                          else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for Anime3rb") }
+                      }
+                      return
+                  case .anivibe:
+                      srcURL = self.extractAniVibeURL(from: htmlString)
+                  case .anibunker:
+                      srcURL = self.extractAniBunker(from: htmlString)
+                  case .tokyoinsider:
+                      self.extractTokyoVideo(from: htmlString) { selectedURL in
+                           DispatchQueue.main.async { self.hideLoadingBanner { self.playVideo(sourceURL: selectedURL, cell: cell, fullURL: fullURL) } }
+                       }
+                       return
+                  case .aniworld:
+                       self.extractVidozaVideoURL(from: htmlString) { videoURL in
+                           guard let finalURL = videoURL else {
+                               self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AniWorld")
+                               return
+                           }
+                           DispatchQueue.main.async { self.hideLoadingBanner { self.playVideo(sourceURL: finalURL, cell: cell, fullURL: fullURL) } }
+                       }
+                       return
+                   case .animeunity:
+                        self.extractEmbedUrl(from: htmlString) { finalUrl in
+                            if let url = finalUrl { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
+                            else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AnimeUnity") }
+                        }
+                        return
+                    case .animeflv:
+                         self.extractStreamtapeQueryParameters(from: htmlString) { videoURL in
+                             if let url = videoURL { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
+                             else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AnimeFLV") }
+                         }
+                         return
+                     case .anilist, .anilibria: // Handled in playEpisode
+                          print("Error: handleSources called unexpectedly for \(selectedSource.rawValue)")
+                          self.hideLoadingBannerAndShowAlert(title: "Internal Error", message: "Source handling error.")
+                          return
+                 }
+
+                guard let finalSrcURL = srcURL else {
+                    self.hideLoadingBannerAndShowAlert(title: "Error", message: "The stream URL wasn't found.")
+                    return
+                }
+
+                self.hideLoadingBanner {
+                     DispatchQueue.main.async {
+                          if let playerType = playerTypeOverride {
+                               self.startStreamingButtonTapped(withURL: finalSrcURL.absoluteString, captionURL: "", playerType: playerType, cell: cell, fullURL: fullURL)
+                           } else {
+                                self.playVideo(sourceURL: finalSrcURL, cell: cell, fullURL: fullURL)
+                            }
+                      }
+                 }
+            }
+        }.resume()
+    }
+
+    // MARK: - Selection Prompts
+
     func selectAudioCategory(options: [String: [[String: Any]]], preferredAudio: String, completion: @escaping (String) -> Void) {
-        // Check if the preferred audio option exists and is not empty
         if let audioOptions = options[preferredAudio], !audioOptions.isEmpty {
-            completion(preferredAudio) // Use the preferred option directly
+            completion(preferredAudio)
         } else {
-            // Preferred option not available or empty, show selection dialog
             hideLoadingBanner {
                 DispatchQueue.main.async {
                     self.presentDubSubRawSelection(options: options, preferredType: preferredAudio) { selectedCategory in
@@ -29,11 +226,9 @@ extension AnimeDetailViewController {
     }
 
     func selectServer(servers: [[String: Any]], preferredServer: String, completion: @escaping (String) -> Void) {
-        // Check if the preferred server exists
         if let server = servers.first(where: { ($0["serverName"] as? String) == preferredServer }) {
-            completion(server["serverName"] as? String ?? "") // Use the preferred server
+            completion(server["serverName"] as? String ?? "")
         } else {
-            // Preferred server not available, show selection dialog
             hideLoadingBanner {
                 DispatchQueue.main.async {
                     self.presentServerSelection(servers: servers) { selectedServer in
@@ -47,31 +242,27 @@ extension AnimeDetailViewController {
 
     func selectSubtitles(captionURLs: [String: URL]?, completion: @escaping (URL?) -> Void) {
         guard let captionURLs = captionURLs, !captionURLs.isEmpty else {
-            completion(nil) // No subtitles available
+            completion(nil)
             return
         }
 
-        // Check user preference
-        if let preferredSubtitles = UserDefaults.standard.string(forKey: "anilistSubtitlePref") { // Updated key
+        if let preferredSubtitles = UserDefaults.standard.string(forKey: "anilistSubtitlePref") {
             if preferredSubtitles == "No Subtitles" {
                 completion(nil)
                 return
             }
             if preferredSubtitles == "Always Import" {
-                // Hide banner before showing import dialog
                 self.hideLoadingBanner {
                     self.importSubtitlesFromURL(completion: completion)
                 }
                 return
             }
-            // Check if preferred language exists in available captions
             if let preferredURL = captionURLs[preferredSubtitles] {
                 completion(preferredURL)
                 return
             }
         }
 
-        // If no preference set, or preferred not available, show selection dialog
         hideLoadingBanner {
             DispatchQueue.main.async {
                 self.presentSubtitleSelection(captionURLs: captionURLs, completion: completion)
@@ -118,14 +309,13 @@ extension AnimeDetailViewController {
         alert.addAction(UIAlertAction(title: "Import", style: .default) { [weak alert] _ in
             guard let urlString = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
                   let url = URL(string: urlString),
-                  let fileExtension = url.pathExtension.lowercased() as String?, // Safely get extension
+                  let fileExtension = url.pathExtension.lowercased() as String?,
                   ["srt", "ass", "vtt"].contains(fileExtension) else {
                       self.showAlert(title: "Error", message: "Invalid subtitle URL. Must end with .srt, .ass, or .vtt")
                       completion(nil)
                       return
                   }
 
-            // Proceed to download
             self.downloadSubtitles(from: url, completion: completion)
         })
 
@@ -134,9 +324,7 @@ extension AnimeDetailViewController {
 
 
     private func downloadSubtitles(from url: URL, completion: @escaping (URL?) -> Void) {
-        // Start download task
         let task = URLSession.shared.downloadTask(with: url) { localURL, response, error in
-            // Check for errors and valid local URL
             guard let localURL = localURL,
                   error == nil,
                   let response = response as? HTTPURLResponse,
@@ -148,16 +336,20 @@ extension AnimeDetailViewController {
                       return
                   }
 
-            // Create a unique temporary URL
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension(url.pathExtension)
 
-            // Move the downloaded file to the temporary location
             do {
+                // Ensure the temp directory exists
+                 try FileManager.default.createDirectory(at: FileManager.default.temporaryDirectory, withIntermediateDirectories: true, attributes: nil)
+                 // If a file already exists at tempURL, remove it first
+                  if FileManager.default.fileExists(atPath: tempURL.path) {
+                      try FileManager.default.removeItem(at: tempURL)
+                  }
                 try FileManager.default.moveItem(at: localURL, to: tempURL)
                 DispatchQueue.main.async {
-                    completion(tempURL) // Return the URL of the saved file
+                    completion(tempURL)
                 }
             } catch {
                 print("Error moving downloaded file: \(error)")
@@ -172,16 +364,14 @@ extension AnimeDetailViewController {
     }
 
     private func presentAlert(_ alert: UIAlertController) {
-        // Find the topmost view controller to present the alert
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let topController = scene.windows.first?.rootViewController {
-            // Configure for iPad presentation
             if UIDevice.current.userInterfaceIdiom == .pad {
                 alert.modalPresentationStyle = .popover
                 if let popover = alert.popoverPresentationController {
                     popover.sourceView = topController.view
                     popover.sourceRect = CGRect(x: topController.view.bounds.midX, y: topController.view.bounds.midY, width: 0, height: 0)
-                    popover.permittedArrowDirections = [] // Center without arrow
+                    popover.permittedArrowDirections = []
                 }
             }
             topController.present(alert, animated: true)
@@ -190,41 +380,70 @@ extension AnimeDetailViewController {
         }
     }
 
-    // Renamed function
+    // MARK: - AniList Specific Helpers
+
     func extractAniListEpisodeId(from url: String) -> String? {
         let components = url.components(separatedBy: "?id=")
         guard components.count >= 2 else { return nil }
-        let episodeId = components[1].components(separatedBy: "&").first
-        guard let ep = components.last else { return nil }
+        let episodeIdPart = components[1].components(separatedBy: "&").first // Get the part after ?id= and before &
+        guard let episodeId = episodeIdPart else { return nil }
 
-        return episodeId.flatMap { "\($0)?\(ep)" }
+        // Find the category and server parts if they exist after episodeId
+        var remainingParams = ""
+        if let range = url.range(of: episodeId + "&") {
+             remainingParams = String(url[range.upperBound...])
+         } else if let range = url.range(of: episodeId + "?") { // Should not happen with ?id= but maybe edge case
+              remainingParams = String(url[range.upperBound...])
+          }
+
+        // Construct the ID string needed for the servers/sources API
+        // Example: zoro/steinsgate-3?ep=13499&sub=6078 -> steinsgate-3?ep=13499
+         if let epRange = url.range(of: "?ep=") ?? url.range(of: "&ep=") {
+              let idPartBeforeEp = String(url[url.range(of: "/watch/")!.upperBound..<epRange.lowerBound])
+              let epPart = url[epRange.lowerBound...] // Includes ?ep=...
+              // Find the end of the episode part (next '&' or end of string)
+               let epEndRange = epPart.range(of: "&")?.lowerBound ?? epPart.endIndex
+               let finalEpPart = String(epPart[..<epEndRange])
+               return idPartBeforeEp + finalEpPart // Combine ID base + episode query part
+           }
+
+
+        return episodeId // Fallback to just the part after ?id= if ?ep= not found
     }
 
-    // Renamed function
     func fetchAniListEpisodeOptions(episodeId: String, completion: @escaping ([String: [[String: Any]]]) -> Void) {
-        let urls = ["https://aniwatch-api-gp1w.onrender.com/anime/servers?episodeId="] // Using provided logic's URL
+        let urls = ["https://aniwatch-api-gp1w.onrender.com/anime/servers?episodeId="] // Provided logic's URL
 
         let randomURL = urls.randomElement()!
-        let fullURL = URL(string: "\(randomURL)\(episodeId)")!
+        // Construct URL carefully: use the extracted ID which might contain query params like ?ep=...
+        guard let fullURL = URL(string: "\(randomURL)\(episodeId)") else {
+             print("Failed to construct AniList episode options URL")
+             completion([:])
+             return
+         }
+
 
         URLSession.shared.dataTask(with: fullURL) { data, response, error in
             guard let data = data else {
-                print("Error fetching episode options: \(error?.localizedDescription ?? "Unknown error")")
+                print("Error fetching AniList episode options: \(error?.localizedDescription ?? "Unknown error")")
                 completion([:])
                 return
             }
 
             do {
-                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let raw = json["raw"] as? [[String: Any]],
-                   let sub = json["sub"] as? [[String: Any]],
-                   let dub = json["dub"] as? [[String: Any]] {
-                    completion(["raw": raw, "sub": sub, "dub": dub])
-                } else {
-                    completion([:])
-                }
+                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    // Extract sub, dub, raw based on the JSON structure provided by the API
+                     // The example JSON had sub/dub/raw directly under the root
+                     let raw = json["raw"] as? [[String: Any]] ?? []
+                     let sub = json["sub"] as? [[String: Any]] ?? []
+                     let dub = json["dub"] as? [[String: Any]] ?? []
+                     completion(["raw": raw, "sub": sub, "dub": dub])
+                 } else {
+                      print("Invalid JSON format for AniList episode options")
+                      completion([:])
+                  }
             } catch {
-                print("Error parsing episode options: \(error.localizedDescription)")
+                print("Error parsing AniList episode options: \(error.localizedDescription)")
                 completion([:])
             }
         }.resume()
@@ -236,18 +455,14 @@ extension AnimeDetailViewController {
             let subOptions = options["sub"]
             let dubOptions = options["dub"]
 
-            // Filter out nil or empty options
             let availableOptions = [
                 "raw": rawOptions,
                 "sub": subOptions,
                 "dub": dubOptions
             ].filter { $0.value != nil && !($0.value!.isEmpty) }
 
-            // Handle cases with no or only one option
             if availableOptions.isEmpty {
-                print("No audio options available")
                 self.showAlert(title: "Error", message: "No audio options available")
-                // Consider how to handle this case - maybe default or return?
                 return
             }
             if availableOptions.count == 1, let onlyOption = availableOptions.first {
@@ -255,39 +470,36 @@ extension AnimeDetailViewController {
                 return
             }
 
-            // Check if preferred type is available
-            if availableOptions[preferredType] != nil {
-                // If preferred type exists and is valid, complete with it (moved check to selectAudioCategory)
-                // completion(preferredType)
-                // return // Removed this return to ensure the alert is shown if needed
-            }
+            // Don't automatically complete with preferredType here, let the alert show
+            // if availableOptions[preferredType] != nil {
+            //    completion(preferredType)
+            //    return
+            // }
 
-            // Show alert if preferred is not available or multiple options exist
             let alert = UIAlertController(title: "Select Audio", message: nil, preferredStyle: .actionSheet)
 
             for (type, _) in availableOptions {
-                let title = type.capitalized // Capitalize for display
+                let title = type.capitalized
                 alert.addAction(UIAlertAction(title: title, style: .default) { _ in
                     completion(type)
                 })
             }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel)) // Add Cancel
 
-            // Find the topmost view controller to present the alert
+            // Presenting logic
             if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let topController = scene.windows.first?.rootViewController {
-                // Configure for iPad presentation
                 if UIDevice.current.userInterfaceIdiom == .pad {
                     alert.modalPresentationStyle = .popover
                     if let popover = alert.popoverPresentationController {
-                        popover.sourceView = topController.view // Or a specific button if applicable
+                        popover.sourceView = topController.view
                         popover.sourceRect = CGRect(x: topController.view.bounds.midX, y: topController.view.bounds.midY, width: 0, height: 0)
-                        popover.permittedArrowDirections = [] // Center without arrow
+                        popover.permittedArrowDirections = []
                     }
                 }
                 topController.present(alert, animated: true, completion: nil)
             } else {
                 print("Could not find top view controller to present alert")
-                // Handle error appropriately, maybe show a standard alert
             }
         }
     }
@@ -298,51 +510,56 @@ extension AnimeDetailViewController {
 
         for server in servers {
             if let serverName = server["serverName"] as? String,
-               serverName != "streamtape" && serverName != "streamsb" { // Filter out specific servers
+               serverName != "streamtape" && serverName != "streamsb" { // Filter out
                 alert.addAction(UIAlertAction(title: serverName, style: .default) { _ in
                     completion(serverName)
                 })
             }
         }
 
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+         // Add cancel action if there are servers to choose from
+          if !alert.actions.filter({ $0.style == .default }).isEmpty {
+              alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+          } else {
+               // If no valid servers, show an error message instead of an empty sheet
+               showAlert(title: "Error", message: "No compatible servers found.")
+               return // Don't present the empty sheet
+           }
 
-        // Find the topmost view controller to present the alert
+
+        // Presenting logic
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let topController = scene.windows.first?.rootViewController {
-            // Configure for iPad presentation
             if UIDevice.current.userInterfaceIdiom == .pad {
                 alert.modalPresentationStyle = .popover
                 if let popover = alert.popoverPresentationController {
-                    popover.sourceView = topController.view // Or a specific button if applicable
+                    popover.sourceView = topController.view
                     popover.sourceRect = CGRect(x: topController.view.bounds.midX, y: topController.view.bounds.midY, width: 0, height: 0)
-                    popover.permittedArrowDirections = [] // Center without arrow
+                    popover.permittedArrowDirections = []
                 }
             }
             topController.present(alert, animated: true, completion: nil)
         } else {
             print("Could not find top view controller to present alert")
-            // Handle error appropriately
         }
     }
 
-    // Renamed function
     func fetchAniListData(from fullURL: String, completion: @escaping (URL?, [String: URL]?) -> Void) {
         guard let url = URL(string: fullURL) else {
-            print("Invalid URL for AniList: \(fullURL)") // Updated source name
+            print("Invalid URL for AniList: \(fullURL)")
             completion(nil, nil)
             return
         }
 
         URLSession.shared.dataTask(with: url) { (data, response, error) in
             if let error = error {
-                print("Error fetching AniList data: \(error.localizedDescription)") // Updated source name
+                print("Error fetching AniList data: \(error.localizedDescription)")
                 completion(nil, nil)
                 return
             }
 
             guard let data = data else {
-                print("Error: No data received from AniList") // Updated source name
+                print("Error: No data received from AniList")
                 completion(nil, nil)
                 return
             }
@@ -351,16 +568,14 @@ extension AnimeDetailViewController {
                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
                     var captionURLs: [String: URL] = [:]
 
-                    // Extract subtitles/tracks
                     if let tracks = json["tracks"] as? [[String: Any]] {
                         for track in tracks {
-                            if let file = track["file"] as? String, let label = track["label"] as? String, track["kind"] as? String == "captions" {
-                                captionURLs[label] = URL(string: file)
+                            if let file = track["file"] as? String, let label = track["label"] as? String, track["kind"] as? String == "captions", let trackURL = URL(string: file) { // Ensure URL is valid
+                                captionURLs[label] = trackURL
                             }
                         }
                     }
 
-                    // Extract main video source URL
                     var sourceURL: URL?
                     if let sources = json["sources"] as? [[String: Any]] {
                         if let source = sources.first, let urlString = source["url"] as? String {
@@ -368,16 +583,19 @@ extension AnimeDetailViewController {
                         }
                     }
 
-                    completion(sourceURL, captionURLs)
-                }
+                    completion(sourceURL, captionURLs.isEmpty ? nil : captionURLs) // Return nil if no captions
+                } else {
+                     print("Invalid JSON format received from AniList source endpoint.")
+                     completion(nil, nil)
+                 }
             } catch {
-                print("Error parsing AniList JSON: \(error.localizedDescription)") // Updated source name
+                print("Error parsing AniList JSON: \(error.localizedDescription)")
                 completion(nil, nil)
             }
         }.resume()
     }
 
-    // --- HTML Fetching and Parsing (Keep existing ones as they are) ---
+    // MARK: - HTML Fetching and Parsing (Generic Helpers)
 
     func fetchHTMLContent(from url: String, completion: @escaping (Result<String, Error>) -> Void) {
         guard let url = URL(string: url) else {
@@ -403,26 +621,27 @@ extension AnimeDetailViewController {
     func extractVideoSourceURL(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
-            // Prioritize video > source if available
             guard let videoElement = try doc.select("video").first(),
-                  let sourceElement = try videoElement.select("source").first(),
+                  let sourceElement = try videoElement.select("source").first(), // Prioritize <source> tag
                   let sourceURLString = try sourceElement.attr("src").nilIfEmpty,
                   let sourceURL = URL(string: sourceURLString) else {
-                      // Fallback or error handling if structure isn't as expected
+                      // Fallback: Check video tag's src attribute directly
+                      if let videoSrcString = try videoElement?.attr("src").nilIfEmpty, let videoSrcURL = URL(string: videoSrcString) {
+                           return videoSrcURL
+                       }
                       return nil
                   }
             return sourceURL
         } catch {
-            print("Error parsing HTML with SwiftSoup: \(error)")
-            // Fallback regex (might be less reliable)
+            print("Error parsing HTML with SwiftSoup for video source: \(error)")
+            // Fallback Regex (less reliable)
             let mp4Pattern = #"<source src="(.*?)" type="video/mp4">"#
             let m3u8Pattern = #"<source src="(.*?)" type="application/x-mpegURL">"#
+            let videoSrcPattern = #"<video[^>]+src="([^"]+)"#
 
-            if let mp4URL = extractURL(from: htmlString, pattern: mp4Pattern) {
-                return mp4URL
-            } else if let m3u8URL = extractURL(from: htmlString, pattern: m3u8Pattern) {
-                return m3u8URL
-            }
+            if let mp4URL = extractURL(from: htmlString, pattern: mp4Pattern) { return mp4URL }
+            if let m3u8URL = extractURL(from: htmlString, pattern: m3u8Pattern) { return m3u8URL }
+             if let videoSrcURL = extractURL(from: htmlString, pattern: videoSrcPattern) { return videoSrcURL }
             return nil
         }
     }
@@ -433,7 +652,6 @@ extension AnimeDetailViewController {
               let urlRange = Range(match.range(at: 1), in: htmlString) else {
                   return nil
               }
-
         let urlString = String(htmlString[urlRange])
         return URL(string: urlString)
     }
@@ -441,27 +659,28 @@ extension AnimeDetailViewController {
     func extractIframeSourceURL(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
-            guard let iframeElement = try doc.select("iframe").first(),
-                  let sourceURLString = try iframeElement.attr("src").nilIfEmpty,
-                  let sourceURL = URL(string: sourceURLString) else {
+            guard let iframeElement = try doc.select("iframe[src]").first(), // Be more specific
+                  let sourceURLString = try iframeElement.attr("src").nilIfEmpty else {
                       return nil
                   }
-            // Handle potential relative URLs or // prefixes if necessary
-            let realSourceURL = "https:\(sourceURL)" // Assuming https if scheme is missing
-            return URL(string: realSourceURL)
+            // Handle schema-relative URLs (e.g., //example.com)
+             if sourceURLString.hasPrefix("//") {
+                  return URL(string: "https:" + sourceURLString)
+              }
+            return URL(string: sourceURLString)
         } catch {
-            print("Error parsing HTML with SwiftSoup: \(error)")
+            print("Error parsing HTML with SwiftSoup for iframe: \(error)")
             return nil
         }
     }
-    
+
     func extractAniBunker(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
             guard let videoElement = try doc.select("div#videoContainer").first(),
                   let videoID = try videoElement.attr("data-video-id").nilIfEmpty else {
-                return nil
-            }
+                      return nil
+                  }
 
             let url = URL(string: "https://www.anibunker.com/php/loader.php")!
             var request = URLRequest(url: url)
@@ -472,10 +691,10 @@ extension AnimeDetailViewController {
             let bodyString = "player_id=url_hd&video_id=\(videoID)"
             request.httpBody = bodyString.data(using: .utf8)
 
-            let (data, _, error) = URLSession.shared.syncRequest(with: request)
+            let (data, _, error) = URLSession.shared.syncRequest(with: request) // Assuming syncRequest exists
 
             guard let data = data, error == nil else {
-                print("Error making POST request: \(error?.localizedDescription ?? "Unknown error")")
+                print("Error making AniBunker POST request: \(error?.localizedDescription ?? "Unknown error")")
                 return nil
             }
 
@@ -485,37 +704,41 @@ extension AnimeDetailViewController {
                let url = URL(string: urlString) {
                 return url
             } else {
-                print("Error parsing JSON response")
+                print("Error parsing AniBunker JSON response")
                 return nil
             }
         } catch {
-            print("Error parsing HTML with SwiftSoup: \(error)")
+            print("Error parsing AniBunker HTML with SwiftSoup: \(error)")
             return nil
         }
     }
 
+
     func extractEmbedUrl(from rawHtml: String, completion: @escaping (URL?) -> Void) {
-        if let startIndex = rawHtml.range(of: "<video-player")?.upperBound,
-           let endIndex = rawHtml.range(of: "</video-player>")?.lowerBound {
+         // Find the <video-player> tag content
+         if let startIndex = rawHtml.range(of: "<video-player")?.upperBound,
+            let endIndex = rawHtml.range(of: "</video-player>")?.lowerBound {
 
-            let videoPlayerContent = String(rawHtml[startIndex..<endIndex])
+             let videoPlayerContent = String(rawHtml[startIndex..<endIndex])
 
-            if let embedUrlStart = videoPlayerContent.range(of: "embed_url=\"")?.upperBound,
-               let embedUrlEnd = videoPlayerContent[embedUrlStart...].range(of: "\"")?.lowerBound {
+             // Extract the embed_url attribute value
+             if let embedUrlStart = videoPlayerContent.range(of: "embed_url=\"")?.upperBound,
+                let embedUrlEnd = videoPlayerContent[embedUrlStart...].range(of: "\"")?.lowerBound {
 
-                var embedUrl = String(videoPlayerContent[embedUrlStart..<embedUrlEnd])
-                // Clean potential HTML entities
-                embedUrl = embedUrl.replacingOccurrences(of: "amp;", with: "")
+                 var embedUrl = String(videoPlayerContent[embedUrlStart..<embedUrlEnd])
+                 embedUrl = embedUrl.replacingOccurrences(of: "&", with: "&") // Clean HTML entities
 
-                extractWindowUrl(from: embedUrl) { finalUrl in
-                    completion(finalUrl)
-                }
-                return
-            }
-        }
-        // If extraction fails
-        completion(nil)
-    }
+                 // Fetch content of embed_url to find the final video link
+                 extractWindowUrl(from: embedUrl) { finalUrl in
+                     completion(finalUrl)
+                 }
+                 return // Exit after starting the async fetch
+             }
+         }
+         // If extraction fails at any point
+         print("Could not extract embed_url from AnimeUnity")
+         completion(nil)
+     }
 
     private func extractWindowUrl(from urlString: String, completion: @escaping (URL?) -> Void) {
         guard let url = URL(string: urlString) else {
@@ -524,72 +747,50 @@ extension AnimeDetailViewController {
         }
 
         var request = URLRequest(url: url)
-        // Set a realistic User-Agent
         request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             guard let data = data,
                   let pageContent = String(data: data, encoding: .utf8) else {
-                      DispatchQueue.main.async {
-                          completion(nil)
-                      }
+                      DispatchQueue.main.async { completion(nil) }
                       return
                   }
 
-            // Regex to find the `window.downloadUrl` variable assignment
-            let downloadUrlPattern = #"window\.downloadUrl\s*=\s*['"]([^'"]+)['"]"#
+            // Try extracting from `window.downloadUrl` first
+             let downloadUrlPattern = #"window\.downloadUrl\s*=\s*['"]([^'"]+)['"]"#
+             if let regex = try? NSRegularExpression(pattern: downloadUrlPattern),
+                let match = regex.firstMatch(in: pageContent, range: NSRange(pageContent.startIndex..., in: pageContent)),
+                let urlRange = Range(match.range(at: 1), in: pageContent) {
+                 let downloadUrlString = String(pageContent[urlRange]).replacingOccurrences(of: "amp;", with: "")
+                 if let downloadUrl = URL(string: downloadUrlString) {
+                     DispatchQueue.main.async { completion(downloadUrl) }
+                     return
+                 }
+             }
 
-            guard let regex = try? NSRegularExpression(pattern: downloadUrlPattern, options: []) else {
-                DispatchQueue.main.async {
-                    completion(nil)
-                }
-                return
-            }
+            // Fallback: Try extracting from `sources:[{file:"..."}]`
+             let sourcesPattern = #"sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+)['"]"#
+              if let sourcesRegex = try? NSRegularExpression(pattern: sourcesPattern),
+                 let sourcesMatch = sourcesRegex.firstMatch(in: pageContent, range: NSRange(pageContent.startIndex..., in: pageContent)),
+                 let sourcesUrlRange = Range(sourcesMatch.range(at: 1), in: pageContent) {
+                 let downloadUrlString = String(pageContent[sourcesUrlRange]).replacingOccurrences(of: "amp;", with: "")
+                  if let downloadUrl = URL(string: downloadUrlString) {
+                      DispatchQueue.main.async { completion(downloadUrl) }
+                      return
+                  }
+              }
 
-            let range = NSRange(pageContent.startIndex..<pageContent.endIndex, in: pageContent)
-            guard let match = regex.firstMatch(in: pageContent, options: [], range: range),
-                  let urlRange = Range(match.range(at: 1), in: pageContent) else {
-                // Try another common pattern if the first fails
-                let sourcesPattern = #"sources:\[\{file:"([^"]+)"#
-                if let sourcesRegex = try? NSRegularExpression(pattern: sourcesPattern),
-                   let sourcesMatch = sourcesRegex.firstMatch(in: pageContent, options: [], range: range),
-                   let sourcesUrlRange = Range(sourcesMatch.range(at: 1), in: pageContent) {
-                       let downloadUrlString = String(pageContent[sourcesUrlRange])
-                       let cleanedUrlString = downloadUrlString.replacingOccurrences(of: "amp;", with: "")
-                       guard let downloadUrl = URL(string: cleanedUrlString) else {
-                           DispatchQueue.main.async { completion(nil) }
-                           return
-                       }
-                       DispatchQueue.main.async { completion(downloadUrl) }
-                       return
-                   }
 
-                DispatchQueue.main.async { completion(nil) }
-                return
-            }
-
-            let downloadUrlString = String(pageContent[urlRange])
-            // Clean potential HTML entities again just in case
-            let cleanedUrlString = downloadUrlString.replacingOccurrences(of: "amp;", with: "")
-
-            guard let downloadUrl = URL(string: cleanedUrlString) else {
-                DispatchQueue.main.async {
-                    completion(nil)
-                }
-                return
-            }
-
-            DispatchQueue.main.async {
-                completion(downloadUrl)
-            }
+            // If neither pattern matches
+            DispatchQueue.main.async { completion(nil) }
         }.resume()
     }
-
 
     func extractDataVideoSrcURL(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
-            guard let element = try doc.select("[data-video-src]").first(),
+            // More specific selector if possible, e.g., targeting a specific container div first
+            guard let element = try doc.select("div[data-video-src]").first() ?? doc.select("video[data-video-src]").first(), // Check div or video tag
                   let sourceURLString = try element.attr("data-video-src").nilIfEmpty,
                   let sourceURL = URL(string: sourceURLString) else {
                       return nil
@@ -597,15 +798,17 @@ extension AnimeDetailViewController {
             print("Data-video-src URL: \(sourceURL.absoluteString)")
             return sourceURL
         } catch {
-            print("Error parsing HTML with SwiftSoup: \(error)")
+            print("Error parsing HTML with SwiftSoup for data-video-src: \(error)")
             return nil
         }
     }
 
+
     func extractDownloadLink(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
-            guard let downloadElement = try doc.select("li.dowloads a").first(),
+            // Look for download links within the specific container
+            guard let downloadElement = try doc.select("li.dowloads a").first() ?? doc.select("div.dowload a").first(), // Try both common structures
                   let hrefString = try downloadElement.attr("href").nilIfEmpty,
                   let downloadURL = URL(string: hrefString) else {
                       return nil
@@ -613,10 +816,11 @@ extension AnimeDetailViewController {
             print("Download link URL: \(downloadURL.absoluteString)")
             return downloadURL
         } catch {
-            print("Error parsing HTML with SwiftSoup: \(error)")
+            print("Error parsing HTML with SwiftSoup for download link: \(error)")
             return nil
         }
     }
+
 
     func extractTokyoVideo(from htmlString: String, completion: @escaping (URL) -> Void) {
          let formats = UserDefaults.standard.bool(forKey: "otherFormats") ? ["mp4", "mkv", "avi"] : ["mp4"]
@@ -624,128 +828,79 @@ extension AnimeDetailViewController {
          DispatchQueue.global(qos: .userInitiated).async {
              do {
                  let doc = try SwiftSoup.parse(htmlString)
-                 // Updated selector to be more robust
                  let combinedSelector = formats.map { "a[href*='media.tokyoinsider.com'][href$='.\($0)']" }.joined(separator: ", ")
-
                  let downloadElements = try doc.select(combinedSelector)
 
                  let foundURLs = downloadElements.compactMap { element -> (URL, String)? in
-                     guard let hrefString = try? element.attr("href").nilIfEmpty,
-                           let url = URL(string: hrefString) else { return nil }
-
+                     guard let hrefString = try? element.attr("href").nilIfEmpty, let url = URL(string: hrefString) else { return nil }
                      let filename = url.lastPathComponent
                      return (url, filename)
                  }
 
                  DispatchQueue.main.async {
                      guard !foundURLs.isEmpty else {
-                         self.hideLoadingBannerAndShowAlert(title: "Error", message: "No valid video URLs found")
+                         self.hideLoadingBannerAndShowAlert(title: "Error", message: "No valid video URLs found for TokyoInsider.")
                          return
                      }
+                     if foundURLs.count == 1 { completion(foundURLs[0].0); return }
 
-                     // If only one URL is found, use it directly
-                     if foundURLs.count == 1 {
-                         completion(foundURLs[0].0)
-                         return
-                     }
-                     // Present quality/format selection if multiple URLs found
                      let alertController = UIAlertController(title: "Select Video Format", message: "Choose which video to play", preferredStyle: .actionSheet)
-
-                     // Configure for iPad
-                     if UIDevice.current.userInterfaceIdiom == .pad {
-                          if let popoverController = alertController.popoverPresentationController {
-                              popoverController.sourceView = self.view // Present from the main view
-                              popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0) // Center it
-                              popoverController.permittedArrowDirections = [] // No arrow
-                          }
-                      }
-
-
+                      if UIDevice.current.userInterfaceIdiom == .pad {
+                           if let popoverController = alertController.popoverPresentationController {
+                               popoverController.sourceView = self.view
+                               popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+                               popoverController.permittedArrowDirections = []
+                           }
+                       }
                      for (url, filename) in foundURLs {
-                         let action = UIAlertAction(title: filename, style: .default) { _ in
-                             completion(url)
-                         }
-                         alertController.addAction(action)
+                         alertController.addAction(UIAlertAction(title: filename, style: .default) { _ in completion(url) })
                      }
-
-                     let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                        self.hideLoadingBanner() // Hide banner on cancel
-                     }
-                     alertController.addAction(cancelAction)
-
-                     // Hide banner before presenting alert
-                     self.hideLoadingBanner {
-                         self.present(alertController, animated: true)
-                     }
+                     alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in self.hideLoadingBanner() })
+                     self.hideLoadingBanner { self.present(alertController, animated: true) }
                  }
              } catch {
                  DispatchQueue.main.async {
-                     print("Error parsing HTML with SwiftSoup: \(error)")
-                     self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting video URLs")
+                     print("Error parsing TokyoInsider HTML: \(error)")
+                     self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting video URLs for TokyoInsider.")
                  }
              }
          }
      }
 
-
-     func extractAsgoldURL(from documentString: String) -> URL? {
-         // Regex to find the specific player URL structure
-         let pattern = "\"player2\":\"!https://video\\.asgold\\.pp\\.ua/video/[^\"]*\""
-
-         do {
-             let regex = try NSRegularExpression(pattern: pattern, options: [])
-             let range = NSRange(documentString.startIndex..<documentString.endIndex, in: documentString)
-
-             if let match = regex.firstMatch(in: documentString, options: [], range: range),
-                let matchRange = Range(match.range, in: documentString) {
-                 // Extract the matched string part
-                 var urlString = String(documentString[matchRange])
-                 // Clean up the extracted string to get the pure URL
-                 urlString = urlString.replacingOccurrences(of: "\"player2\":\"!", with: "")
-                 urlString = urlString.replacingOccurrences(of: "\"", with: "")
-                 return URL(string: urlString)
-             }
-         } catch {
-             // Handle regex error if needed, though unlikely for a static pattern
-             return nil
-         }
-         // Return nil if no match is found
-         return nil
-     }
-
+    func extractAsgoldURL(from documentString: String) -> URL? {
+        let pattern = "\"player2\":\"!https://video\\.asgold\\.pp\\.ua/video/[^\"]*\""
+        do {
+            let regex = try NSRegularExpression(pattern: pattern)
+            let range = NSRange(documentString.startIndex..., in: documentString)
+            if let match = regex.firstMatch(in: documentString, range: range),
+               let matchRange = Range(match.range, in: documentString) {
+                var urlString = String(documentString[matchRange])
+                urlString = urlString.replacingOccurrences(of: "\"player2\":\"!", with: "")
+                urlString = urlString.replacingOccurrences(of: "\"", with: "")
+                return URL(string: urlString)
+            }
+        } catch { return nil }
+        return nil
+    }
 
     func extractAniVibeURL(from htmlContent: String) -> URL? {
-        // Regex pattern to find the "url": "..." pattern containing .m3u8
         let pattern = #""url":"(.*?\.m3u8)""#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            print("Invalid regex pattern for AniVibe")
-            return nil
-        }
-
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let range = NSRange(htmlContent.startIndex..., in: htmlContent)
-        guard let match = regex.firstMatch(in: htmlContent, range: range) else {
-            print("No m3u8 URL found in AniVibe HTML")
-            return nil
-        }
-
-        // Extract the captured group (the URL itself)
+        guard let match = regex.firstMatch(in: htmlContent, range: range) else { return nil }
         if let urlRange = Range(match.range(at: 1), in: htmlContent) {
             let extractedURLString = String(htmlContent[urlRange])
-            // Unescape any forward slashes if present
             let unescapedURLString = extractedURLString.replacingOccurrences(of: "\\/", with: "/")
             return URL(string: unescapedURLString)
         }
-
         return nil
     }
 
 
     func extractStreamtapeQueryParameters(from htmlString: String, completion: @escaping (URL?) -> Void) {
-        // First, find the streamtape.com URL within the initial HTML
         let streamtapePattern = #"https?://(?:www\.)?streamtape\.com/[^\s"']+"#
-        guard let streamtapeRegex = try? NSRegularExpression(pattern: streamtapePattern, options: []),
-              let streamtapeMatch = streamtapeRegex.firstMatch(in: htmlString, options: [], range: NSRange(location: 0, length: htmlString.utf16.count)),
+        guard let streamtapeRegex = try? NSRegularExpression(pattern: streamtapePattern),
+              let streamtapeMatch = streamtapeRegex.firstMatch(in: htmlString, range: NSRange(htmlString.startIndex..., in: htmlString)),
               let streamtapeRange = Range(streamtapeMatch.range, in: htmlString) else {
             print("Streamtape URL not found in HTML.")
             completion(nil)
@@ -759,7 +914,6 @@ extension AnimeDetailViewController {
             return
         }
 
-        // Now, fetch the content of the Streamtape page
         var request = URLRequest(url: streamtapeURL)
         request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
@@ -771,214 +925,148 @@ extension AnimeDetailViewController {
             }
 
             let responseHTML = String(data: data, encoding: .utf8) ?? ""
-
-            // Regex to find the specific query parameters needed for get_video
-            let queryPattern = #"\?id=[^&]+&expires=\d+&ip=\w+&token=\S+(?=['"])"# // Look for the query string ending before a ' or "
-            guard let queryRegex = try? NSRegularExpression(pattern: queryPattern, options: []),
-                  let queryMatch = queryRegex.firstMatch(in: responseHTML, options: [], range: NSRange(location: 0, length: responseHTML.utf16.count)),
+            let queryPattern = #"\?id=[^&]+&expires=\d+&ip=\w+&token=\S+(?=['"])"#
+            guard let queryRegex = try? NSRegularExpression(pattern: queryPattern),
+                  let queryMatch = queryRegex.firstMatch(in: responseHTML, range: NSRange(responseHTML.startIndex..., in: responseHTML)),
                   let queryRange = Range(queryMatch.range, in: responseHTML) else {
-                print("Query parameters not found.")
+                print("Streamtape query parameters not found.")
                 completion(nil)
                 return
             }
 
             let queryString = String(responseHTML[queryRange])
-            let fullURL = "https://streamtape.com/get_video" + queryString // Construct the final URL
-
-            completion(URL(string: fullURL)) // Return the final URL
+            let fullURL = "https://streamtape.com/get_video" + queryString
+            completion(URL(string: fullURL))
         }.resume()
     }
 
     // --- Anime3rb specific methods ---
      func anime3rbGetter(from documentString: String, completion: @escaping (URL?) -> Void) {
-         // 1. Extract the initial video player URL
          guard let videoPlayerURL = extractAnime3rbVideoURL(from: documentString) else {
              completion(nil)
              return
          }
-
-         // 2. Fetch the content of that player URL and extract the MP4 source
          extractAnime3rbMP4VideoURL(from: videoPlayerURL.absoluteString) { mp4Url in
-             DispatchQueue.main.async { // Ensure completion is called on the main thread
-                 completion(mp4Url)
-             }
+             DispatchQueue.main.async { completion(mp4Url) }
          }
      }
 
      func extractAnime3rbVideoURL(from documentString: String) -> URL? {
-         // Pattern to find the specific video player URL structure
          let pattern = "https://video\\.vid3rb\\.com/player/[\\w-]+\\?token=[\\w]+&(?:amp;)?expires=\\d+"
-
          do {
-             let regex = try NSRegularExpression(pattern: pattern, options: [])
-             let range = NSRange(documentString.startIndex..<documentString.endIndex, in: documentString)
-
-             if let match = regex.firstMatch(in: documentString, options: [], range: range),
+             let regex = try NSRegularExpression(pattern: pattern)
+             let range = NSRange(documentString.startIndex..., in: documentString)
+             if let match = regex.firstMatch(in: documentString, range: range),
                 let matchRange = Range(match.range, in: documentString) {
-                 let urlString = String(documentString[matchRange])
-                 // Clean potential HTML entities like &
-                 let cleanedURLString = urlString.replacingOccurrences(of: "&", with: "&")
-                 return URL(string: cleanedURLString)
+                 let urlString = String(documentString[matchRange]).replacingOccurrences(of: "&", with: "&")
+                 return URL(string: urlString)
              }
-         } catch {
-             // Handle regex error if needed
-             return nil
-         }
-         // Return nil if no match is found
+         } catch { return nil }
          return nil
      }
 
      func extractAnime3rbMP4VideoURL(from urlString: String, completion: @escaping (URL?) -> Void) {
-         guard let url = URL(string: urlString) else {
-             completion(nil)
-             return
-         }
-
+         guard let url = URL(string: urlString) else { completion(nil); return }
          var request = URLRequest(url: url)
-         // Set a realistic User-Agent if necessary
          request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
          URLSession.shared.dataTask(with: request) { data, response, error in
-             guard let data = data,
-                   let pageContent = String(data: data, encoding: .utf8) else {
-                 // If fetching fails, return nil on the main thread
-                 DispatchQueue.main.async {
-                     completion(nil)
-                 }
+             guard let data = data, let pageContent = String(data: data, encoding: .utf8) else {
+                 DispatchQueue.main.async { completion(nil) }
                  return
              }
-
-             // Regex to find MP4 URLs within the player page content
-             let mp4Pattern = #"https?://[^\s<>"]+?\.mp4[^\s<>"]*"# // More robust pattern
-
-             guard let regex = try? NSRegularExpression(pattern: mp4Pattern, options: []) else {
-                 DispatchQueue.main.async {
-                     completion(nil)
-                 }
+             let mp4Pattern = #"https?://[^\s<>"]+?\.mp4[^\s<>"]*"#
+             guard let regex = try? NSRegularExpression(pattern: mp4Pattern) else {
+                 DispatchQueue.main.async { completion(nil) }
                  return
              }
-
-             let range = NSRange(pageContent.startIndex..<pageContent.endIndex, in: pageContent)
-             if let match = regex.firstMatch(in: pageContent, options: [], range: range),
+             let range = NSRange(pageContent.startIndex..., in: pageContent)
+             if let match = regex.firstMatch(in: pageContent, range: range),
                 let urlRange = Range(match.range, in: pageContent) {
-                 let urlString = String(pageContent[urlRange])
-                 // Clean potential HTML entities again
-                 let cleanedUrlString = urlString.replacingOccurrences(of: "amp;", with: "")
-                 let mp4Url = URL(string: cleanedUrlString)
-                 // Return the found MP4 URL on the main thread
-                 DispatchQueue.main.async {
-                     completion(mp4Url)
-                 }
-                 return // Exit after finding the first match
+                 let urlString = String(pageContent[urlRange]).replacingOccurrences(of: "amp;", with: "")
+                 DispatchQueue.main.async { completion(URL(string: cleanedUrlString)) } // Use cleaned
+                 return
              }
-
-             // If no MP4 URL is found, return nil on the main thread
-             DispatchQueue.main.async {
-                 completion(nil)
-             }
+             DispatchQueue.main.async { completion(nil) }
          }.resume()
      }
+
 
     // --- AnimeFire specific methods ---
      func fetchVideoDataAndChooseQuality(from urlString: String, completion: @escaping (URL?) -> Void) {
          guard let url = URL(string: urlString) else {
-             print("Invalid URL string")
+             print("Invalid URL string for AnimeFire")
              completion(nil)
              return
          }
-
-         // Make the network request to get the JSON data
          let task = URLSession.shared.dataTask(with: url) { data, response, error in
              guard let data = data, error == nil else {
-                 print("Network error: \(String(describing: error))")
+                 print("AnimeFire Network error: \(String(describing: error))")
                  completion(nil)
                  return
              }
-
              do {
-                 // Parse the JSON response
-                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                 if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                     let videoDataArray = json["data"] as? [[String: Any]] {
-
-                     var availableQualitiesDict: [String: String] = [:] // Dictionary to store label -> src
-
-                     // Extract available qualities and their URLs
+                     var availableQualitiesDict: [String: String] = [:]
                      for videoData in videoDataArray {
                          if let label = videoData["label"] as? String, let src = videoData["src"] as? String {
                              availableQualitiesDict[label] = src
                          }
                      }
-
                      if availableQualitiesDict.isEmpty {
-                         print("No available video qualities found")
+                         print("No available video qualities found for AnimeFire")
                          completion(nil)
-                         return
+                     } else {
+                         DispatchQueue.main.async {
+                             self.choosePreferredQuality(availableQualities: availableQualitiesDict, completion: completion)
+                         }
                      }
-
-                     // Choose the preferred or closest quality
-                     DispatchQueue.main.async {
-                         self.choosePreferredQuality(availableQualities: availableQualitiesDict, completion: completion)
-                     }
-
                  } else {
-                     print("JSON structure is invalid or data key is missing")
+                     print("AnimeFire JSON structure invalid or data key missing")
                      completion(nil)
                  }
              } catch {
-                 print("Error parsing JSON: \(error)")
+                 print("Error parsing AnimeFire JSON: \(error)")
                  completion(nil)
              }
          }
-
          task.resume()
      }
 
 
-    func choosePreferredQuality(availableQualities: [String: String], completion: @escaping (URL?) -> Void) {
-        let preferredQuality = UserDefaults.standard.string(forKey: "preferredQuality") ?? "1080p" // Default to 1080p if not set
-
-        // Check if the preferred quality exists directly
-        if let preferredUrlString = availableQualities[preferredQuality], let url = URL(string: preferredUrlString) {
-            completion(url)
-            return
-        }
-
-        // If preferred quality not found, find the closest available quality
-        let availableLabels = availableQualities.keys.sorted { // Sort numerically for closest match logic
-            (Int($0.replacingOccurrences(of: "p", with: "")) ?? 0) > (Int($1.replacingOccurrences(of: "p", with: "")) ?? 0)
-        }
-
-        let preferredValue = Int(preferredQuality.replacingOccurrences(of: "p", with: "")) ?? 1080
-
-        var closestQualityLabel: String? = nil
-        var minDifference = Int.max
-
-        for label in availableLabels {
-            if let qualityValue = Int(label.replacingOccurrences(of: "p", with: "")) {
-                let difference = abs(qualityValue - preferredValue)
-                if difference < minDifference {
-                    minDifference = difference
-                    closestQualityLabel = label
-                } else if difference == minDifference {
-                     // If differences are equal, prefer higher quality
-                     if qualityValue > (Int(closestQualityLabel?.replacingOccurrences(of: "p", with: "") ?? "0") ?? 0) {
-                         closestQualityLabel = label
-                     }
-                 }
-            }
-        }
-
-
-        // Get the URL for the chosen quality
-        if let finalQualityLabel = closestQualityLabel, let urlString = availableQualities[finalQualityLabel], let finalUrl = URL(string: urlString) {
-            completion(finalUrl)
-        } else if let fallbackQuality = availableQualities.values.first, let fallbackUrl = URL(string: fallbackQuality) {
-            // Fallback to the first available quality if closest logic fails (shouldn't happen if availableQualities is not empty)
-             completion(fallbackUrl)
-        }
-        else {
-            print("No suitable quality option found")
-            completion(nil)
-        }
-    }
+     func choosePreferredQuality(availableQualities: [String: String], completion: @escaping (URL?) -> Void) {
+         let preferredQuality = UserDefaults.standard.string(forKey: "preferredQuality") ?? "1080p"
+         if let preferredUrlString = availableQualities[preferredQuality], let url = URL(string: preferredUrlString) {
+             completion(url)
+             return
+         }
+         let availableLabels = availableQualities.keys.sorted {
+             (Int($0.replacingOccurrences(of: "p", with: "")) ?? 0) > (Int($1.replacingOccurrences(of: "p", with: "")) ?? 0)
+         }
+         let preferredValue = Int(preferredQuality.replacingOccurrences(of: "p", with: "")) ?? 1080
+         var closestQualityLabel: String? = nil
+         var minDifference = Int.max
+         for label in availableLabels {
+             if let qualityValue = Int(label.replacingOccurrences(of: "p", with: "")) {
+                 let difference = abs(qualityValue - preferredValue)
+                 if difference < minDifference {
+                     minDifference = difference
+                     closestQualityLabel = label
+                 } else if difference == minDifference {
+                      if qualityValue > (Int(closestQualityLabel?.replacingOccurrences(of: "p", with: "") ?? "0") ?? 0) {
+                          closestQualityLabel = label
+                      }
+                  }
+             }
+         }
+         if let finalQualityLabel = closestQualityLabel, let urlString = availableQualities[finalQualityLabel], let finalUrl = URL(string: urlString) {
+             completion(finalUrl)
+         } else if let fallbackQuality = availableQualities.values.first, let fallbackUrl = URL(string: fallbackQuality) {
+              completion(fallbackUrl)
+         } else {
+             print("No suitable quality option found for AnimeFire")
+             completion(nil)
+         }
+     }
 }
