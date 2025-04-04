@@ -1,0 +1,48 @@
+# .github/workflows/build.yml
+
+name: Build Ryu IPA
+
+on:
+  # Trigger the workflow on pushes to the main branch
+  push:
+    branches:
+      - rollback
+  # Allow manual triggering from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build IPA
+    # Use the latest macOS runner provided by GitHub Actions
+    runs-on: macOS-latest
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch all history for all tags and branches - useful if build script relies on Git history/tags
+          fetch-depth: 0
+
+      # Step 2: Make the build script executable and run it
+      # This script contains the xcodebuild commands to build and archive the app,
+      # importantly disabling code signing to produce an unsigned IPA.
+      - name: Run ipabuild.sh
+        run: |
+          chmod +x ipabuild.sh
+          ./ipabuild.sh
+
+      # Step 3: Upload the generated IPA file as a build artifact
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Name of the artifact as it will appear in GitHub
+          name: Ryu-IPA
+          # Path to the file(s) to upload
+          path: build/Ryu.ipa
+          # Optional: How long to retain the artifact (in days)
+          retention-days: 7
+          # Optional: Behavior if no files are found at the specified path
+          if-no-files-found: error # 'warn' or 'ignore' are other options
+          # Optional: Compression level (0=none, 9=max). 0 is faster.
+          compression-level: 0
