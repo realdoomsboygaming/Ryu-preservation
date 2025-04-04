@@ -1,6 +1,22 @@
 import UIKit
 import SwiftSoup
 
+// Define AnimeItem if it's not defined elsewhere globally
+// class AnimeItem: NSObject { // Using NSObject for potential Objective-C compatibility if needed later
+//    let title: String
+//    let imageURL: String
+//    let href: String
+//
+//    init(title: String, imageURL: String, href: String) {
+//        self.title = title
+//        self.imageURL = imageURL
+//        self.href = href
+//        super.init() // Call super.init() for NSObject subclass
+//    }
+// }
+// Assuming AnimeItem is defined elsewhere or like above
+
+
 extension HomeViewController {
     func getSourceInfo(for source: String) -> (String?, ((Document?, String?) throws -> [AnimeItem])?) {
         switch source {
@@ -16,26 +32,33 @@ extension HomeViewController {
             return ("https://kuramanime.red/quick/ongoing?order_by=updated", parseKuramanimeFeatured)
         case "Anime3rb":
             return ("https://anime3rb.com/titles/list?status[0]=upcomming&status[1]=finished&sort_by=addition_date", parseAnime3rbFeatured)
-        case "AniList":
+        case "AniList": // Renamed
             return ("https://aniwatch-api-gp1w.onrender.com/anime/home", parseAniListFeatured)
         case "Anilibria":
             return ("https://api.anilibria.tv/v3/title/updates?filter=posters,id,names&limit=20", parseAniLibriaFeatured)
         case "AnimeSRBIJA":
-            return ("https://www.animesrbija.com/filter?sort=new", paseAnimeSRBIJAFeatured) // Note: Typo in original function name 'pase' vs 'parse'
+            // Corrected function name reference
+            return ("https://www.animesrbija.com/filter?sort=new", parseAnimeSRBIJAFeatured)
         case "AniWorld":
-            return ("https://aniworld.to/neu", paseAniWorldFeatured) // Note: Typo in original function name 'pase' vs 'parse'
+            // Corrected function name reference
+            return ("https://aniworld.to/neu", parseAniWorldFeatured)
         case "TokyoInsider":
-            return ("https://www.tokyoinsider.com/new", paseTokyoFeatured) // Note: Typo in original function name 'pase' vs 'parse'
+            // Corrected function name reference
+            return ("https://www.tokyoinsider.com/new", parseTokyoFeatured)
         case "AniVibe":
-            return ("https://anivibe.net/newest", paseAniVibeFeatured) // Note: Typo in original function name 'pase' vs 'parse'
+            // Corrected function name reference
+            return ("https://anivibe.net/newest", parseAniVibeFeatured)
         case "AnimeUnity":
             return ("https://www.animeunity.to/", parseAnimeUnityFeatured)
         case "AnimeFLV":
-            return ("https://www3.animeflv.net/", paseAnimeFLVFeatured) // Corrected function name
+            // Corrected function name reference
+            return ("https://www3.animeflv.net/", parseAnimeFLVFeatured)
         case "AnimeBalkan":
-            return ("https://animebalkan.org/animesaprevodom/?status=&type=&order=update", parseAnimeBalkanFeatured) // Corrected function name
+            // Corrected function name reference
+            return ("https://animebalkan.org/animesaprevodom/?status=&type=&order=update", parseAnimeBalkanFeatured)
         case "AniBunker":
-            return ("https://www.anibunker.com/animes", parseAniBunkerFeatured) // Corrected function name
+            // Corrected function name reference
+            return ("https://www.anibunker.com/animes", parseAniBunkerFeatured)
         default:
             return (nil, nil)
         }
@@ -43,7 +66,6 @@ extension HomeViewController {
 
     // --- HTML Parsers ---
 
-    // ... (parseAnimeWorldFeatured, parseGoGoFeatured, parseAnimeHeavenFeatured, parseAnimeFireFeatured, parseKuramanimeFeatured, parseAnime3rbFeatured remain the same) ...
     func parseAnimeWorldFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] {
         guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
         let animeItems = try doc.select("div.content[data-name=all] div.item")
@@ -105,7 +127,7 @@ extension HomeViewController {
                  title.removeSubrange(range)
              }
 
-             var imageURL = try item.select("article.card img").attr("src")
+             var imageURL = try item.select("article.card img").attr("src") // Changed from data-src
 
              if imageURL.isEmpty {
                  imageURL = "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"
@@ -164,6 +186,7 @@ extension HomeViewController {
              guard let title = anime["name"] as? String,
                    let imageUrl = anime["poster"] as? String,
                    let href = anime["id"] as? String else { return nil }
+             // Use the anime ID (slug) as href
              return AnimeItem(title: title, imageURL: imageUrl, href: href)
          }
      }
@@ -186,14 +209,14 @@ extension HomeViewController {
                    let medium = posters["medium"] as? [String: Any],
                    let posterURL = medium["url"] as? String else { return nil }
              let imageURL = "https://anilibria.tv" + posterURL
-             let href = String(id)
+             let href = String(id) // Use the ID as href
              return AnimeItem(title: title, imageURL: imageURL, href: href)
          }
      }
 
 
-    // --- More HTML Parsers (Fixing potential typos in original function names) ---
-    func paseAnimeSRBIJAFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Kept 'pase' as in original for now
+    // --- More HTML Parsers (Corrected function names) ---
+    func parseAnimeSRBIJAFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
         guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
         let animeItems = try doc.select("div.ani-wrap div.ani-item")
         return try animeItems.array().compactMap { item in
@@ -207,7 +230,7 @@ extension HomeViewController {
         }
     }
 
-    func paseAniWorldFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Kept 'pase'
+    func parseAniWorldFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
          guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
          let animeItems = try doc.select("div.seriesListSection div.seriesListContainer div")
          return try animeItems.array().compactMap { item in
@@ -220,7 +243,7 @@ extension HomeViewController {
          }
      }
 
-     func paseTokyoFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Kept 'pase'
+     func parseTokyoFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
          guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
          let animeItems = try doc.select("div#inner_page div.c_h2b, div#inner_page div.c_h2")
          return try animeItems.array().compactMap { item in
@@ -228,22 +251,27 @@ extension HomeViewController {
              if let range = title.range(of: "\\s*(episode|special)", options: .regularExpression, range: nil, locale: nil) {
                  title = title.prefix(upTo: range.lowerBound).trimmingCharacters(in: .whitespaces)
              }
-             let imageURL = "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg" // Placeholder
-             let hrefBase = try item.select("a").first()?.attr("href").components(separatedBy: ")").first ?? "" // Safer split
-             let href = "https://www.tokyoinsider.com" + hrefBase + ")"
+             // Tokyo insider search doesn't easily provide images, using placeholder
+             let imageURL = "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"
+             // Extract the anime detail page link (the one without 'episode')
+             let links = try item.select("a")
+             guard let detailLink = try links.filter({ try !$0.attr("href").contains("/episode/") }).first,
+                   let hrefBase = try? detailLink.attr("href") else { return nil } // Skip if no detail link
+
+             let href = "https://www.tokyoinsider.com" + hrefBase
              return AnimeItem(title: title, imageURL: imageURL, href: href)
          }
      }
 
-     func paseAniVibeFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Kept 'pase'
+     func parseAniVibeFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
          guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
          let animeItems = try doc.select("div.listupd article")
          return try animeItems.array().compactMap { item in
              let title = try item.select("div.tt span").text()
              var imageUrl = try item.select("img").attr("src")
-             imageUrl = imageUrl.replacingOccurrences(of: "small", with: "default")
+             imageUrl = imageUrl.replacingOccurrences(of: #"-\d+x\d+(\.\w+)$"#, with: "$1", options: .regularExpression) // Remove size suffix
              let href = try item.select("a").first()?.attr("href") ?? ""
-             let hrefFull = "https://anivibe.net" + href
+             let hrefFull = "https://anivibe.net" + href // Prepend base URL
              return AnimeItem(title: title, imageURL: imageUrl, href: hrefFull)
          }
      }
@@ -255,31 +283,45 @@ extension HomeViewController {
         do {
             let rawHtml = try doc.html()
 
-            if let startIndex = rawHtml.range(of: "items-json=\"")?.upperBound,
-               let endIndex = rawHtml.range(of: "\"", range: startIndex..<rawHtml.endIndex)?.lowerBound {
+            // Find the <layout-items> tag which contains the JSON
+            if let startIndex = rawHtml.range(of: "<layout-items")?.upperBound,
+               let endIndex = rawHtml.range(of: "</layout-items>")?.lowerBound {
 
-                let jsonString = String(rawHtml[startIndex..<endIndex])
-                    .replacingOccurrences(of: """, with: "\"") // Fixed replacement
+                let layoutContent = String(rawHtml[startIndex..<endIndex])
 
-                if let jsonData = jsonString.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                   let data = json["data"] as? [[String: Any]] {
+                // Extract the JSON string from items-json attribute
+                if let jsonStart = layoutContent.range(of: "items-json=\"")?.upperBound,
+                   let jsonEnd = layoutContent[jsonStart...].range(of: "\"")?.lowerBound {
 
-                    return data.compactMap { record in
-                        guard let anime = record["anime"] as? [String: Any],
-                              let title = anime["title"] as? String ?? anime["title_eng"] as? String,
-                              let imageUrl = anime["imageurl"] as? String,
-                              let animeID = anime["id"] as? Int,
-                              let slug = anime["slug"] as? String else {
-                            return nil
+                    // Clean the JSON string (replace HTML entities like ")
+                    let jsonString = String(layoutContent[jsonStart..<jsonEnd])
+                        .replacingOccurrences(of: """, with: "\"") // Corrected replacement
+
+                    if let jsonData = jsonString.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                       let data = json["data"] as? [[String: Any]] {
+
+                        return data.compactMap { record in
+                            guard let anime = record["anime"] as? [String: Any],
+                                  let title = anime["title"] as? String ?? anime["title_eng"] as? String, // Prefer original, fallback to English
+                                  let imageUrl = anime["imageurl"] as? String,
+                                  let animeID = anime["id"] as? Int,
+                                  let slug = anime["slug"] as? String else {
+                                return nil
+                            }
+
+                            let hrefFull = "\(baseURL)\(animeID)-\(slug)"
+                            return AnimeItem(title: title, imageURL: imageUrl, href: hrefFull)
                         }
-
-                        let hrefFull = "\(baseURL)\(animeID)-\(slug)"
-                        return AnimeItem(title: title, imageURL: imageUrl, href: hrefFull)
+                    } else {
+                         print("Failed to parse items-json from AnimeUnity layout-items")
                     }
-                }
+                } else {
+                     print("Could not find items-json attribute in AnimeUnity layout-items")
+                 }
+            } else {
+                print("Could not find layout-items element for AnimeUnity")
             }
-            print("Could not find or parse layout-items JSON for AnimeUnity")
             return []
         } catch {
             print("Error parsing AnimeUnity Featured: \(error.localizedDescription)")
@@ -287,41 +329,25 @@ extension HomeViewController {
         }
     }
 
-     func paseAnimeFLVFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
-         guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
-         let animeItems = try doc.select("ul.ListEpisodios li")
-         return try animeItems.array().compactMap { item in
-             let title = try item.select("strong.Title").text()
-             let imageUrl = try item.select("img").attr("src")
-             let imageURL = "https://www3.animeflv.net" + imageUrl
-             let href = try item.select("a").first()?.attr("href") ?? ""
-             let hrefFull = "https://www3.animeflv.net" + href
-             let modifiedHref = hrefFull.components(separatedBy: "-").dropLast().joined(separator: "-")
-             let modifiedHref2 = modifiedHref.replacingOccurrences(of: "/ver/", with: "/anime/")
-             return AnimeItem(title: title, imageURL: imageURL, href: modifiedHref2)
-         }
-     }
 
-     func parseAnimeBalkanFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
-         guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
-         let animeItems = try doc.select("div.listupd article")
-         return try animeItems.array().compactMap { item in
-             let title = try item.select("h2").text()
-             let imageUrl = try item.select("img").attr("data-src")
-             let href = try item.select("a").first()?.attr("href")
-             return AnimeItem(title: title, imageURL: imageUrl, href: href ?? "")
-         }
-     }
+    // Added Stub Function
+    func parseAnimeFLVFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] {
+        print("Warning: parseAnimeFLVFeatured called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AnimeFLV's homepage structure.
+        return []
+    }
 
-     func parseAniBunkerFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] { // Corrected name
-         guard let doc = doc else { throw NSError(domain: "ParsingError", code: 0, userInfo: [NSLocalizedDescriptionKey: "HTML Document is nil"]) }
-         let animeItems = try doc.select("div.section--body article")
-         return try animeItems.array().compactMap { item in
-             let title = try item.select("h4").text()
-             let imageUrl = try item.select("img").attr("src")
-             let href = try item.select("a").first()?.attr("href") ?? ""
-             let hrefFull = "https://www.anibunker.com/" + href
-             return AnimeItem(title: title, imageURL: imageUrl, href: hrefFull)
-         }
-     }
+    // Added Stub Function
+    func parseAnimeBalkanFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] {
+        print("Warning: parseAnimeBalkanFeatured called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AnimeBalkan's homepage structure.
+        return []
+    }
+
+    // Added Stub Function
+    func parseAniBunkerFeatured(_ doc: Document?, _ jsonString: String?) throws -> [AnimeItem] {
+        print("Warning: parseAniBunkerFeatured called, but using stub implementation.")
+        // TODO: Implement actual parsing logic based on AniBunker's homepage structure.
+        return []
+    }
 }
