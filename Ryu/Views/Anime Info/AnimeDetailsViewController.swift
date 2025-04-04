@@ -2056,21 +2056,3 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
       }
 
 }
-
- struct Episode: Hashable {
-     let id: String? // Optional ID, needed for HiAnime
-     let number: String
-     let title: String?
-     let href: String
-     let downloadUrl: String?
-
-     // Conformance to Hashable
-     func hash(into hasher: inout Hasher) {
-         hasher.combine(href) // Use href as the unique identifier for hashing
-     }
-
-     // Conformance to Equatable (required by Hashable)
-     static func == (lhs: Episode, rhs: Episode) -> Bool {
-         return lhs.href == rhs.href
-     }
- }
