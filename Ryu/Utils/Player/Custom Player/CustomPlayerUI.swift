@@ -1,10 +1,3 @@
-//
-//  CustomPlayer.swift
-//  Ryu
-//
-//  Created by Francesco on 24/08/24.
-//
-
 import UIKit
 import AVKit
 import GoogleCast
@@ -16,39 +9,42 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
     private var playerLayer: AVPlayerLayer?
     private var isControlsVisible = true
     private var hideControlsTimer: Timer?
-    private var baseURL: URL?
-    private var realURL: URL?
-    private var qualities: [(String, String)] = []
+    private var baseURL: URL? // Base URL for m3u8 segments
+    private var realURL: URL? // The actual video URL being played
+    private var qualities: [(String, String)] = [] // Format: [("1080p", "filename.m3u8")]
     private var currentQualityIndex = 0
     private var timeObserverToken: Any?
-    private var isSeekingAllowed = false
+    private var isSeekingAllowed = false // Prevent seeking before duration is known
     private var blurEffectView: UIVisualEffectView?
     private var pipController: AVPictureInPictureController?
-    private var isSpeedIndicatorVisible = false
+    private var isSpeedIndicatorVisible = false // Track visibility of speed indicator
     private var videoTitle: String = ""
-    private var subtitlesURL: URL?
+    private var subtitlesURL: URL? // URL for external subtitles
     private var originalBrightness: CGFloat = UIScreen.main.brightness
     private var isFullBrightness = false
-    private var cell: EpisodeCell
-    private var fullURL: String
-    private var hasSentUpdate = false
-    private var animeImage: String
-    private var chromecastObserver: NSObjectProtocol?
-    
+    private var cell: EpisodeCell // Reference to the cell for progress updates
+    private var fullURL: String // The unique identifier URL for the episode
+    private var hasSentUpdate = false // Flag to prevent multiple progress updates
+    private var animeImage: String // For Cast metadata
+    private var chromecastObserver: NSObjectProtocol? // Observer for Cast state changes
+
+    // Skip times properties
     private var skipButtonsBottomConstraint: NSLayoutConstraint?
     private var skipButtons: [UIButton] = []
     private var skipIntervalViews: [UIView] = []
-    private var skipIntervals: [(String, TimeInterval, TimeInterval, String)] = []
-    private var autoSkipTimer: Timer?
-    
-    private var hasVotedForSkipTimes = false
+    private var skipIntervals: [(type: String, start: TimeInterval, end: TimeInterval, id: String)] = [] // Store type and ID
+    private var autoSkipTimer: Timer? // Timer for auto-skip checks
+
+    private var hasVotedForSkipTimes = false // Flag to track voting status
     private var hasSkippedIntro = false
     private var hasSkippedOutro = false
-    
+
+    // Seeking properties
     private var isSeeking = false
     private var seekThumbWidthConstraint: NSLayoutConstraint?
     private var seekThumbCenterXConstraint: NSLayoutConstraint?
-    
+
+    // Subtitle properties
     private var subtitles: [SubtitleCue] = []
     private var currentSubtitleIndex: Int?
     private var lastTranslationLanguage: String?
@@ -58,150 +54,169 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
     private var subtitleBorderWidth: CGFloat = 1
     private var subtitleBorderColor: UIColor = .black
     private var areSubtitlesHidden = false
-    
+
+    // MARK: - UI Elements (Lazy Initialization)
     private lazy var playPauseButton: UIImageView = {
         let imageView = UIImageView()
-        imageView.image = UIImage(systemName: "play.fill")
+        imageView.image = UIImage(systemName: "play.fill") // Initial state
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(playPauseButtonTapped))
         imageView.addGestureRecognizer(tapGesture)
+        imageView.contentMode = .scaleAspectFit // Ensure icon fits
         return imageView
     }()
-    
+
     private lazy var rewindButton: UIImageView = {
         let imageView = UIImageView(image: UIImage(systemName: "gobackward.10"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(rewindButtonTapped))
         imageView.addGestureRecognizer(tapGesture)
+        imageView.contentMode = .scaleAspectFit
         return imageView
     }()
-    
+
     private lazy var forwardButton: UIImageView = {
         let imageView = UIImageView(image: UIImage(systemName: "goforward.10"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(forwardButtonTapped))
         imageView.addGestureRecognizer(tapGesture)
+        imageView.contentMode = .scaleAspectFit
         return imageView
     }()
-    
+
+    // Separate container for progress bar elements to handle gestures precisely
     private lazy var progressBarContainer: UIView = {
         let view = UIView()
-        view.backgroundColor = .clear
+        view.backgroundColor = .clear // Make container transparent
         return view
     }()
-    
+
     private lazy var playerProgress: UIProgressView = {
         let progress = UIProgressView(progressViewStyle: .default)
-        progress.progressTintColor = .white
-        progress.trackTintColor = .gray
+        progress.progressTintColor = .systemTeal // Use accent color
+        progress.trackTintColor = UIColor.white.withAlphaComponent(0.3) // Dim track color
         progress.translatesAutoresizingMaskIntoConstraints = false
         return progress
     }()
-    
-    private lazy var seekThumb: UIView = {
-        let view = UIView()
-        view.backgroundColor = .white
-        view.layer.cornerRadius = 8
-        view.translatesAutoresizingMaskIntoConstraints = false
-        return view
-    }()
-    
+
+     // Thumb view for seeking interaction
+     private lazy var seekThumb: UIView = {
+         let view = UIView()
+         view.backgroundColor = .white
+         view.layer.cornerRadius = 8 // Make it circular
+         view.layer.masksToBounds = true // Ensure corners are rounded
+         view.translatesAutoresizingMaskIntoConstraints = false
+         view.alpha = 0 // Initially hidden
+         return view
+     }()
+
+
     private lazy var currentTimeLabel: UILabel = {
         let label = UILabel()
         label.textColor = .white
-        label.font = UIFont.systemFont(ofSize: 12)
+        label.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular) // Monospaced for consistent width
         return label
     }()
-    
+
     private lazy var totalTimeLabel: UILabel = {
         let label = UILabel()
         label.textColor = .white
-        label.font = UIFont.systemFont(ofSize: 12)
+        label.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular) // Monospaced
+        label.textAlignment = .right // Align to the right
         return label
     }()
-    
+
     private lazy var controlsContainerView: UIView = {
         let view = UIView()
-        view.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.4) // Semi-transparent background
         return view
     }()
-    
+
     private lazy var settingsButton: UIButton = {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: "gear"), for: .normal)
         button.tintColor = .white
-        button.showsMenuAsPrimaryAction = true
+        button.showsMenuAsPrimaryAction = true // Enable UIMenu interaction
         return button
     }()
-    
+
+    // Speed indicator shown during long-press speed change
     private lazy var speedIndicatorLabel: UILabel = {
         let label = UILabel()
         label.textColor = .white
         label.font = UIFont.systemFont(ofSize: 12)
         label.textAlignment = .center
-        label.isHidden = true
+        label.isHidden = true // Initially hidden
         return label
     }()
-    
+
     private lazy var speedIndicatorBackgroundView: UIView = {
         let view = UIView()
         view.backgroundColor = UIColor.black.withAlphaComponent(0.7)
         view.layer.cornerRadius = 12
-        view.isHidden = true
+        view.isHidden = true // Initially hidden
         return view
     }()
-    
+
     private lazy var speedButton: UIButton = {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: "speedometer"), for: .normal)
         button.tintColor = .white
-        button.showsMenuAsPrimaryAction = true
-        button.addTarget(self, action: #selector(speedButtonTapped), for: .touchUpInside)
+        button.showsMenuAsPrimaryAction = true // Enable UIMenu interaction
+        // Target removed, handled by showsMenuAsPrimaryAction
+        // button.addTarget(self, action: #selector(speedButtonTapped), for: .touchUpInside)
         return button
     }()
-    
+
     private lazy var titleLabel: UILabel = {
         let label = UILabel()
         label.textColor = .white
         label.font = UIFont.systemFont(ofSize: 18, weight: .bold)
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.numberOfLines = 1 // Ensure title doesn't wrap excessively
+        label.lineBreakMode = .byTruncatingTail
         return label
     }()
-    
-    private lazy var episodeLabel: UILabel = {
-        let label = UILabel()
-        label.textColor = .white
-        label.font = UIFont.systemFont(ofSize: 14)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
-    }()
-    
+
+     private lazy var episodeLabel: UILabel = {
+         let label = UILabel()
+         label.textColor = UIColor.white.withAlphaComponent(0.8) // Slightly dimmed
+         label.font = UIFont.systemFont(ofSize: 14)
+         label.translatesAutoresizingMaskIntoConstraints = false
+         label.numberOfLines = 1
+         label.lineBreakMode = .byTruncatingTail
+         return label
+     }()
+
     private lazy var dismissButton: UIImageView = {
         let imageView = UIImageView(image: UIImage(systemName: "xmark"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissButtonTapped))
         imageView.addGestureRecognizer(tapGesture)
+        imageView.contentMode = .scaleAspectFit
         return imageView
     }()
-    
+
     private lazy var pipButton: UIImageView = {
         let imageView = UIImageView(image: UIImage(systemName: "pip.enter"))
         imageView.tintColor = .white
         imageView.isUserInteractionEnabled = true
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(pipButtonTapped))
         imageView.addGestureRecognizer(tapGesture)
+        imageView.isHidden = !AVPictureInPictureController.isPictureInPictureSupported() // Hide if PiP not supported
+        imageView.contentMode = .scaleAspectFit
         return imageView
     }()
-    
+
     private lazy var subtitlesLabel: UILabel = {
         let label = UILabel()
         label.textColor = subtitleColor
         label.font = UIFont.systemFont(ofSize: subtitleFontSize, weight: .bold)
-        label.numberOfLines = 0
+        label.numberOfLines = 0 // Allow multiple lines for subtitles
         label.textAlignment = .center
         label.layer.shadowColor = subtitleBorderColor.cgColor
         label.layer.shadowOffset = CGSize(width: 0, height: 0)
@@ -210,16 +225,16 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         label.layer.masksToBounds = false
         return label
     }()
-    
-    private lazy var airplayButton: UIImageView = {
-        let imageView = UIImageView(image: UIImage(systemName: "airplayvideo"))
-        imageView.tintColor = .white
-        imageView.isUserInteractionEnabled = true
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(airplayButtonTapped))
-        imageView.addGestureRecognizer(tapGesture)
-        return imageView
-    }()
-    
+
+    private lazy var airplayButton: UIImageView = { // Changed to UIImageView
+         let airplayView = AVRoutePickerView()
+         airplayView.activeTintColor = .systemTeal
+         airplayView.tintColor = .white // Set default tint
+         airplayView.translatesAutoresizingMaskIntoConstraints = false
+         return airplayView
+     }()
+
+    // MARK: - Initialization
     init(frame: CGRect, cell: EpisodeCell, fullURL: String, image: String) {
         self.cell = cell
         self.fullURL = fullURL
@@ -228,26 +243,37 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         setupPlayer()
         setupUI()
         setupGestures()
-        updateSubtitleAppearance()
+        updateSubtitleAppearance() // Apply initial subtitle style
         loadSettings()
         setupChromecastObserver()
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
+    // MARK: - Deinitialization
     deinit {
         NotificationCenter.default.removeObserver(self)
         if let token = timeObserverToken {
             player?.removeTimeObserver(token)
+            timeObserverToken = nil // Nil out the token
         }
+         subtitleTimer?.invalidate() // Invalidate subtitle timer
+         subtitleTimer = nil
         if let observer = chromecastObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        // Restore brightness if needed
+        if isFullBrightness {
+            UIScreen.main.brightness = originalBrightness
+        }
+        print("CustomVideoPlayerView deinitialized")
     }
-    
+
+    // MARK: - Setup
     private func setupChromecastObserver() {
+        // Listen for Cast state changes
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(checkCastState),
@@ -255,67 +281,93 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
             object: nil
         )
     }
-    
+
     @objc private func checkCastState() {
-        guard GCKCastContext.sharedInstance().castState == .connected else { return }
-        proceedWithCasting(videoURL: realURL!)
+        // If connected, proceed with casting and dismiss the player
+        guard GCKCastContext.sharedInstance().castState == .connected, let url = realURL else { return }
+        proceedWithCasting(videoURL: url)
+        // Dismiss the custom player view controller
         findViewController()?.dismiss(animated: true, completion: nil)
     }
-    
+
     private func setupPlayer() {
         player = AVPlayer()
         playerLayer = AVPlayerLayer(player: player)
-        playerLayer?.videoGravity = .resizeAspect
+        playerLayer?.videoGravity = .resizeAspect // Default gravity
         layer.addSublayer(playerLayer!)
-        
-        let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
-            self?.updateTimeLabels()
-            self?.updatePlayPauseButton()
-        }
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(playerItemDidReachEnd), name: .AVPlayerItemDidPlayToEndTime, object: nil)
-        
+
+        // Observe player status for readiness
+         player?.addObserver(self, forKeyPath: #keyPath(AVPlayer.currentItem.status), options: [.new, .initial], context: nil)
+
+        // Observe playback end
+        NotificationCenter.default.addObserver(self, selector: #selector(playerItemDidReachEnd), name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem) // Observe specific item
+
+        // Setup PiP controller if supported
         if AVPictureInPictureController.isPictureInPictureSupported() {
             pipController = AVPictureInPictureController(playerLayer: playerLayer!)
             pipController?.delegate = self
         }
     }
-    
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if playPauseButton.point(inside: convert(point, to: playPauseButton), with: event) {
-            if !isControlsVisible {
-                showControls()
+
+     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+          // Allow interaction with controls even when hidden if the tap is on them
+          if controlsContainerView.alpha > 0 {
+               for subview in controlsContainerView.subviews.reversed() { // Check top-most views first
+                    if subview.frame.contains(convert(point, to: controlsContainerView)) && subview.isUserInteractionEnabled {
+                        // If the tap is on a control, ensure controls are shown before returning the view
+                         if !isControlsVisible { showControls() }
+                        return subview.hitTest(convert(point, to: subview), with: event) ?? subview
+                    }
+                }
+           }
+           // Also check progressBarContainer separately if controls are hidden
+            if progressBarContainer.frame.contains(point) && progressBarContainer.isUserInteractionEnabled {
+                if !isControlsVisible { showControls() }
+                return progressBarContainer.hitTest(convert(point, to: progressBarContainer), with: event) ?? progressBarContainer
             }
-            return playPauseButton
-        }
-        
-        return super.hitTest(point, with: event)
-    }
-    
-    
+
+
+           // If tap is not on controls or progress bar, handle show/hide
+           if let view = super.hitTest(point, with: event), view == self || view == controlsContainerView {
+               handleTap() // Show/hide controls on background tap
+               return self // Intercept tap on background
+           }
+
+
+           return super.hitTest(point, with: event) // Default behavior otherwise
+       }
+
+
     private func setupUI() {
-        addSubview(speedIndicatorBackgroundView)
-        addSubview(speedIndicatorLabel)
-        addSubview(controlsContainerView)
+        // Add subviews in correct Z-order (background first, then controls, then labels)
+        addSubview(controlsContainerView) // Add container first
         addSubview(subtitlesLabel)
-        addSubview(progressBarContainer)
+        addSubview(progressBarContainer) // Progress bar container separate for gestures
+
+        // Add elements to their containers
         progressBarContainer.addSubview(playerProgress)
         progressBarContainer.addSubview(seekThumb)
+
         controlsContainerView.addSubview(playPauseButton)
         controlsContainerView.addSubview(rewindButton)
         controlsContainerView.addSubview(forwardButton)
-        controlsContainerView.addSubview(playerProgress)
+        // playerProgress moved to progressBarContainer
         controlsContainerView.addSubview(currentTimeLabel)
         controlsContainerView.addSubview(totalTimeLabel)
         controlsContainerView.addSubview(settingsButton)
         controlsContainerView.addSubview(speedButton)
         controlsContainerView.addSubview(titleLabel)
         controlsContainerView.addSubview(dismissButton)
-        controlsContainerView.addSubview(pipButton)
+        if pipController != nil { controlsContainerView.addSubview(pipButton) } // Only add if supported
         controlsContainerView.addSubview(episodeLabel)
-        controlsContainerView.addSubview(airplayButton)
-        
+        controlsContainerView.addSubview(airplayButton) // Add AirPlay button view
+
+         // Add speed indicator overlays last so they appear on top
+         addSubview(speedIndicatorBackgroundView)
+         addSubview(speedIndicatorLabel)
+
+
+        // Setup constraints using translatesAutoresizingMaskIntoConstraints = false
         speedIndicatorLabel.translatesAutoresizingMaskIntoConstraints = false
         speedIndicatorBackgroundView.translatesAutoresizingMaskIntoConstraints = false
         speedButton.translatesAutoresizingMaskIntoConstraints = false
@@ -332,194 +384,179 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         subtitlesLabel.translatesAutoresizingMaskIntoConstraints = false
         episodeLabel.translatesAutoresizingMaskIntoConstraints = false
         progressBarContainer.translatesAutoresizingMaskIntoConstraints = false
-        airplayButton.translatesAutoresizingMaskIntoConstraints = false
-        
+        airplayButton.translatesAutoresizingMaskIntoConstraints = false // Ensure this is set
+
+
+        // Activate constraints
         NSLayoutConstraint.activate([
-            speedIndicatorLabel.centerYAnchor.constraint(equalTo: dismissButton.centerYAnchor, constant: -10),
-            speedIndicatorLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            
-            speedIndicatorBackgroundView.centerXAnchor.constraint(equalTo: speedIndicatorLabel.centerXAnchor),
-            speedIndicatorBackgroundView.centerYAnchor.constraint(equalTo: speedIndicatorLabel.centerYAnchor),
-            speedIndicatorBackgroundView.widthAnchor.constraint(equalTo: speedIndicatorLabel.widthAnchor, constant: 20),
-            speedIndicatorBackgroundView.heightAnchor.constraint(equalTo: speedIndicatorLabel.heightAnchor, constant: 10),
-            
+            // Speed Indicator Constraints
+             speedIndicatorBackgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
+             speedIndicatorBackgroundView.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 60), // Position below top controls
+             speedIndicatorBackgroundView.widthAnchor.constraint(equalTo: speedIndicatorLabel.widthAnchor, constant: 20),
+             speedIndicatorBackgroundView.heightAnchor.constraint(equalTo: speedIndicatorLabel.heightAnchor, constant: 10),
+
+             speedIndicatorLabel.centerXAnchor.constraint(equalTo: speedIndicatorBackgroundView.centerXAnchor),
+             speedIndicatorLabel.centerYAnchor.constraint(equalTo: speedIndicatorBackgroundView.centerYAnchor),
+
+
+            // Controls Container Constraints
             controlsContainerView.topAnchor.constraint(equalTo: topAnchor),
             controlsContainerView.leadingAnchor.constraint(equalTo: leadingAnchor),
             controlsContainerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             controlsContainerView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            
-            titleLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor),
-            titleLabel.bottomAnchor.constraint(equalTo: playerProgress.topAnchor, constant: -8),
-            titleLabel.trailingAnchor.constraint(equalTo: speedButton.leadingAnchor),
-            
-            episodeLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor),
-            episodeLabel.bottomAnchor.constraint(equalTo: titleLabel.topAnchor),
-            
-            playPauseButton.centerXAnchor.constraint(equalTo: centerXAnchor),
-            playPauseButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            playPauseButton.widthAnchor.constraint(equalToConstant: 50),
-            playPauseButton.heightAnchor.constraint(equalToConstant: 55),
-            
-            rewindButton.trailingAnchor.constraint(equalTo: playPauseButton.leadingAnchor, constant: -80),
+
+             // Top Controls (Dismiss, PiP, AirPlay)
+             dismissButton.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 15), // Adjusted padding
+             dismissButton.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 15), // Adjusted padding
+             dismissButton.widthAnchor.constraint(equalToConstant: 30), // Increased size
+             dismissButton.heightAnchor.constraint(equalToConstant: 30), // Increased size
+
+             pipButton.centerYAnchor.constraint(equalTo: dismissButton.centerYAnchor),
+             pipButton.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 20), // Spacing
+             pipButton.widthAnchor.constraint(equalToConstant: 30),
+             pipButton.heightAnchor.constraint(equalToConstant: 30), // Make PiP button same size
+
+             airplayButton.centerYAnchor.constraint(equalTo: dismissButton.centerYAnchor),
+             airplayButton.leadingAnchor.constraint(equalTo: pipButton.trailingAnchor, constant: 20), // Spacing
+             airplayButton.widthAnchor.constraint(equalToConstant: 30), // Consistent size
+             airplayButton.heightAnchor.constraint(equalToConstant: 30), // Consistent size
+
+
+            // Center Controls (Play/Pause, Rewind, Forward)
+            playPauseButton.centerXAnchor.constraint(equalTo: controlsContainerView.centerXAnchor),
+            playPauseButton.centerYAnchor.constraint(equalTo: controlsContainerView.centerYAnchor),
+            playPauseButton.widthAnchor.constraint(equalToConstant: 50), // Standard size
+            playPauseButton.heightAnchor.constraint(equalToConstant: 55), // Standard size
+
+            rewindButton.trailingAnchor.constraint(equalTo: playPauseButton.leadingAnchor, constant: -60), // Adjust spacing
             rewindButton.centerYAnchor.constraint(equalTo: playPauseButton.centerYAnchor),
-            rewindButton.widthAnchor.constraint(equalToConstant: 30),
-            rewindButton.heightAnchor.constraint(equalToConstant: 30),
-            
-            forwardButton.leadingAnchor.constraint(equalTo: playPauseButton.trailingAnchor, constant: 80),
+            rewindButton.widthAnchor.constraint(equalToConstant: 35), // Slightly larger
+            rewindButton.heightAnchor.constraint(equalToConstant: 35),
+
+            forwardButton.leadingAnchor.constraint(equalTo: playPauseButton.trailingAnchor, constant: 60), // Adjust spacing
             forwardButton.centerYAnchor.constraint(equalTo: playPauseButton.centerYAnchor),
-            forwardButton.widthAnchor.constraint(equalToConstant: 30),
-            forwardButton.heightAnchor.constraint(equalToConstant: 30),
-            
-            progressBarContainer.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
-            progressBarContainer.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
-            progressBarContainer.bottomAnchor.constraint(equalTo: currentTimeLabel.topAnchor),
-            progressBarContainer.heightAnchor.constraint(equalToConstant: 17),
-            
-            playerProgress.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 10),
-            playerProgress.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -10),
-            playerProgress.bottomAnchor.constraint(equalTo: currentTimeLabel.topAnchor, constant: -5),
-            playerProgress.heightAnchor.constraint(equalToConstant: 7),
-            
-            seekThumb.centerYAnchor.constraint(equalTo: playerProgress.centerYAnchor),
-            seekThumb.heightAnchor.constraint(equalToConstant: 16),
-            
-            currentTimeLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor),
-            currentTimeLabel.bottomAnchor.constraint(equalTo: controlsContainerView.bottomAnchor, constant: -30),
-            
-            totalTimeLabel.trailingAnchor.constraint(equalTo: playerProgress.trailingAnchor),
-            totalTimeLabel.bottomAnchor.constraint(equalTo: controlsContainerView.bottomAnchor, constant: -30),
-            
-            settingsButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            settingsButton.trailingAnchor.constraint(equalTo: playerProgress.trailingAnchor),
-            settingsButton.widthAnchor.constraint(equalToConstant: 30),
-            
+            forwardButton.widthAnchor.constraint(equalToConstant: 35), // Slightly larger
+            forwardButton.heightAnchor.constraint(equalToConstant: 35),
+
+             // Progress Bar Container Constraints (separate for gestures)
+             progressBarContainer.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 10), // Use safe area + padding
+             progressBarContainer.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -10), // Use safe area + padding
+             progressBarContainer.bottomAnchor.constraint(equalTo: currentTimeLabel.topAnchor, constant: -5), // Position above time labels
+             progressBarContainer.heightAnchor.constraint(equalToConstant: 20), // Slightly taller for easier interaction
+
+
+             // Progress Bar Constraints (within its container)
+             playerProgress.leadingAnchor.constraint(equalTo: progressBarContainer.leadingAnchor),
+             playerProgress.trailingAnchor.constraint(equalTo: progressBarContainer.trailingAnchor),
+             playerProgress.centerYAnchor.constraint(equalTo: progressBarContainer.centerYAnchor), // Center vertically
+             playerProgress.heightAnchor.constraint(equalToConstant: 6), // Thinner progress bar
+
+
+             // Seek Thumb Constraints (within progress bar container)
+             seekThumb.centerYAnchor.constraint(equalTo: playerProgress.centerYAnchor),
+             seekThumb.heightAnchor.constraint(equalToConstant: 16), // Larger thumb
+
+
+            // Time Labels Constraints
+            currentTimeLabel.leadingAnchor.constraint(equalTo: progressBarContainer.leadingAnchor), // Align with progress bar container edge
+             currentTimeLabel.bottomAnchor.constraint(equalTo: controlsContainerView.bottomAnchor, constant: -15), // Padding from bottom
+
+            totalTimeLabel.trailingAnchor.constraint(equalTo: progressBarContainer.trailingAnchor), // Align with progress bar container edge
+            totalTimeLabel.bottomAnchor.constraint(equalTo: currentTimeLabel.bottomAnchor), // Align baseline with current time
+
+            // Bottom Controls (Title, Episode, Settings, Speed) - Positioned above progress bar
+             titleLabel.leadingAnchor.constraint(equalTo: progressBarContainer.leadingAnchor), // Align with progress bar container
+             titleLabel.bottomAnchor.constraint(equalTo: progressBarContainer.topAnchor, constant: -15), // Space below title
+             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: speedButton.leadingAnchor, constant: -10), // Don't overlap speed button
+
+             episodeLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor), // Align with title
+             episodeLabel.bottomAnchor.constraint(equalTo: titleLabel.topAnchor, constant: -2), // Place above title
+
+            settingsButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor), // Align with title vertically
+            settingsButton.trailingAnchor.constraint(equalTo: progressBarContainer.trailingAnchor), // Align with progress bar container
+             settingsButton.widthAnchor.constraint(equalToConstant: 30), // Standard size
+             settingsButton.heightAnchor.constraint(equalToConstant: 30),
+
             speedButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            speedButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor),
-            speedButton.widthAnchor.constraint(equalToConstant: 30),
-            
-            dismissButton.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 30),
-            dismissButton.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 10),
-            dismissButton.widthAnchor.constraint(equalToConstant: 25),
-            dismissButton.heightAnchor.constraint(equalToConstant: 25),
-            
-            pipButton.centerYAnchor.constraint(equalTo: dismissButton.centerYAnchor),
-            pipButton.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 25),
-            pipButton.widthAnchor.constraint(equalToConstant: 30),
-            pipButton.heightAnchor.constraint(equalToConstant: 25),
-            
-            airplayButton.centerYAnchor.constraint(equalTo: dismissButton.centerYAnchor),
-            airplayButton.leadingAnchor.constraint(equalTo: pipButton.trailingAnchor, constant: 20),
-            airplayButton.widthAnchor.constraint(equalToConstant: 28),
-            airplayButton.heightAnchor.constraint(equalToConstant: 25),
-            
+            speedButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -15), // Spacing from settings
+             speedButton.widthAnchor.constraint(equalToConstant: 30), // Standard size
+             speedButton.heightAnchor.constraint(equalToConstant: 30),
+
+
+            // Subtitles Label Constraints
             subtitlesLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            subtitlesLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
-            subtitlesLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor),
-            subtitlesLabel.trailingAnchor.constraint(equalTo: playerProgress.trailingAnchor)
+            subtitlesLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -45), // Position above bottom controls
+            subtitlesLabel.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor), // Align with progress bar edges
+            subtitlesLabel.trailingAnchor.constraint(equalTo: playerProgress.trailingAnchor) // Align with progress bar edges
         ])
-        
+
+        // Initialize seek thumb constraints (will be updated)
+        seekThumbWidthConstraint = seekThumb.widthAnchor.constraint(equalToConstant: 16)
+        seekThumbCenterXConstraint = seekThumb.centerXAnchor.constraint(equalTo: playerProgress.leadingAnchor)
+        seekThumbWidthConstraint?.isActive = true
+        seekThumbCenterXConstraint?.isActive = true
+        hideSeekThumb(animated: false) // Start with thumb hidden
+
+        // Format episode label text
         let episodeText = self.cell.episodeNumber
         var formattedText = ""
-        
+        let episodeNum = EpisodeNumberExtractor.extract(from: episodeText) // Use extractor
         if episodeText.hasPrefix("S") {
             let components = episodeText.dropFirst().components(separatedBy: "E")
             if components.count == 2 {
                 let seasonNumber = components[0]
                 let episodeNumber = components[1]
+                // Clean numbers (remove leading zeros if desired, though maybe not needed here)
                 let cleanSeasonNum = Int(seasonNumber)?.description ?? seasonNumber
                 let cleanEpisodeNum = Int(episodeNumber)?.description ?? episodeNumber
                 formattedText = "Season \(cleanSeasonNum) · Episode \(cleanEpisodeNum)"
-            }
+            } else {
+                 // Fallback if SxE format is unexpected
+                  formattedText = "Episode \(episodeNum)"
+              }
         } else {
-            formattedText = "Episode " + episodeText
+            formattedText = "Episode \(episodeNum)"
         }
         episodeLabel.text = formattedText
-        
-        seekThumbWidthConstraint = seekThumb.widthAnchor.constraint(equalToConstant: 16)
-        seekThumbCenterXConstraint = seekThumb.centerXAnchor.constraint(equalTo: playerProgress.leadingAnchor)
-        seekThumbWidthConstraint?.isActive = true
-        seekThumbCenterXConstraint?.isActive = true
-        
-        hideSeekThumb()
     }
-    
+
     private func updateSubtitleAppearance() {
         subtitlesLabel.font = UIFont.systemFont(ofSize: subtitleFontSize, weight: .bold)
         subtitlesLabel.textColor = subtitleColor
         subtitlesLabel.layer.shadowColor = subtitleBorderColor.cgColor
         subtitlesLabel.layer.shadowRadius = subtitleBorderWidth
     }
-    
+
     private func setupGestures() {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-        addGestureRecognizer(tapGesture)
-        
+        tapGesture.delegate = self // Set delegate to allow specific hit testing
+        controlsContainerView.addGestureRecognizer(tapGesture) // Add to container view
+
         let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
-        addGestureRecognizer(longPressGesture)
-        
+        longPressGesture.minimumPressDuration = 0.3 // Shorter duration for speed change
+        controlsContainerView.addGestureRecognizer(longPressGesture)
+
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handleProgressPan(_:)))
-        progressBarContainer.addGestureRecognizer(panGesture)
-        
+        progressBarContainer.addGestureRecognizer(panGesture) // Add pan to the specific container
+
         let tap2Gesture = UITapGestureRecognizer(target: self, action: #selector(handleProgressTap(_:)))
-        progressBarContainer.addGestureRecognizer(tap2Gesture)
-    }
-    
-    @objc private func airplayButtonTapped() {
-        let actionSheet = UIAlertController(title: "Cast Options", message: nil, preferredStyle: .actionSheet)
-        
-        actionSheet.addAction(UIAlertAction(title: "AirPlay", style: .default) { [weak self] _ in
-            self?.performAirplay()
-        })
-        
-        actionSheet.addAction(UIAlertAction(title: "Chromecast", style: .default) { [weak self] _ in
-            self?.presentChromecastDeviceList()
-        })
-        
-        actionSheet.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
-        
-        if let popoverController = actionSheet.popoverPresentationController {
-            popoverController.sourceView = UIApplication.shared.keyWindow
-            popoverController.sourceRect = CGRect(x: UIScreen.main.bounds.midX, y: UIScreen.main.bounds.midY, width: 0, height: 0)
-            popoverController.permittedArrowDirections = []
-        }
-        
-        findViewController()?.present(actionSheet, animated: true)
-    }
-    
-    private func performAirplay() {
-        let rect = CGRect(x: -100, y: 0, width: 0, height: 0)
-        let airplayVolume = MPVolumeView(frame: rect)
-        airplayVolume.showsVolumeSlider = false
-        self.addSubview(airplayVolume)
-        for view: UIView in airplayVolume.subviews {
-            if let button = view as? UIButton {
-                button.sendActions(for: .touchUpInside)
-                break
-            }
-        }
-        airplayVolume.removeFromSuperview()
+        progressBarContainer.addGestureRecognizer(tap2Gesture) // Add tap to the specific container
     }
 
-    private func presentChromecastDeviceList() {
-        let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
-        self.addSubview(castButton)
-        castButton.isHidden = true
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            castButton.sendActions(for: .touchUpInside)
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                castButton.removeFromSuperview()
-            }
-        }
+    // MARK: - Actions
+    @objc private func airplayButtonTapped() {
+        // AVRoutePickerView handles its own presentation
+        print("AirPlay button (AVRoutePickerView) tapped - system handles presentation.")
     }
-    
+
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer?.frame = self.bounds
+        // Update skip interval positions when layout changes (e.g., rotation)
         updateProgressBarWithSkipIntervals()
     }
-    
+
+    // MARK: - Video Loading & Playback
     func setVideo(url: URL, title: String, subURL: URL? = nil, cell: EpisodeCell, fullURL: String) {
         self.videoTitle = title
         titleLabel.text = title
@@ -528,91 +565,113 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
         self.subtitlesURL = subURL
         self.cell = cell
         self.fullURL = fullURL
-        
+
+        // Reset state for new video
+         resetSkipFlags()
+         hasSentUpdate = false
+         hasVotedForSkipTimes = false
+         skipIntervals.removeAll()
+         removeSkipIntervalViews()
+         subtitles.removeAll()
+         subtitlesLabel.text = nil
+         currentSubtitleIndex = nil
+         lastTranslationLanguage = nil
+         subtitleTimer?.invalidate()
+         subtitleTimer = nil
+
+
         let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(fullURL)")
-        
+
+        // Handle Chromecast connection before setting player item
         if GCKCastContext.sharedInstance().sessionManager.hasConnectedCastSession() {
             proceedWithCasting(videoURL: url)
             findViewController()?.dismiss(animated: true, completion: nil)
+            return // Don't proceed with local playback if casting
         }
-        
+
         if url.pathExtension == "m3u8" {
+            // Parse M3U8 to get quality options
             parseM3U8(url: url) { [weak self] in
                 guard let self = self else { return }
+                 // Select preferred quality after parsing
                 let savedPreferredQuality = UserDefaults.standard.string(forKey: "preferredQuality")
-                
-                let preferredQualities = [savedPreferredQuality,"1080p","720p","480p","360p"].compactMap { $0 }
-                if let matchingQualityIndex = preferredQualities.lazy
-                    .compactMap({ preferredQuality in
-                        self.qualities.firstIndex(where: { $0.0.lowercased() == preferredQuality.lowercased() })
-                    })
-                    .first {
-                    self.setQuality(index: matchingQualityIndex)
-                } else {
-                    if let highestQualityIndex = self.qualities.indices.last {
-                        self.setQuality(index: highestQualityIndex)
-                    }
-                }
-                
-                if lastPlayedTime > 0 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        self.player?.seek(to: CMTime(seconds: lastPlayedTime, preferredTimescale: 1))
-                    }
-                }
-                self.updateSettingsMenu()
+                 let preferredQualities = [savedPreferredQuality,"1080p","720p","480p","360p"].compactMap { $0 }
+
+                 if let matchingQualityIndex = preferredQualities.lazy
+                     .compactMap({ preferredQuality in
+                         self.qualities.firstIndex(where: { $0.0.lowercased() == preferredQuality.lowercased() })
+                     })
+                     .first {
+                      // Check if player item needs replacing (if quality changed or first load)
+                       if self.player?.currentItem == nil || self.currentQualityIndex != matchingQualityIndex {
+                            self.setQuality(index: matchingQualityIndex, seekTime: lastPlayedTime)
+                       } else if lastPlayedTime > 0 {
+                            // If same quality but need to seek
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { // Small delay for player readiness
+                                self.player?.seek(to: CMTime(seconds: lastPlayedTime, preferredTimescale: 1))
+                           }
+                       }
+                 } else {
+                     // Fallback to highest quality if preferred not found
+                     if let highestQualityIndex = self.qualities.indices.last {
+                          if self.player?.currentItem == nil || self.currentQualityIndex != highestQualityIndex {
+                               self.setQuality(index: highestQualityIndex, seekTime: lastPlayedTime)
+                           } else if lastPlayedTime > 0 {
+                               DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                   self.player?.seek(to: CMTime(seconds: lastPlayedTime, preferredTimescale: 1))
+                              }
+                           }
+                     }
+                 }
+                 self.updateSettingsMenu() // Update menu after qualities are known
             }
         } else {
+            // Direct URL (MP4, etc.)
             let playerItem = AVPlayerItem(url: url)
             player?.replaceCurrentItem(with: playerItem)
-            qualities.removeAll()
-            updateSettingsMenu()
-            
+            qualities.removeAll() // Clear old qualities
+             currentQualityIndex = 0 // Reset quality index
+            updateSettingsMenu() // Update menu for non-m3u8
+
             if lastPlayedTime > 0 {
-                player?.seek(to: CMTime(seconds: lastPlayedTime, preferredTimescale: 1))
-            }
+                 // Observe status to seek only when ready
+                 playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new, .initial], context: nil)
+             } else {
+                  isSeekingAllowed = true // Allow seeking immediately if not seeking
+              }
         }
-        
+
+        // Load subtitles if URL is provided
         if let subtitlesURL = subtitlesURL {
             loadSubtitles(from: subtitlesURL)
-            subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateSubtitle), userInfo: nil, repeats: true)
-            subtitlesLabel.isHidden = false
+            // Start timer only after subtitles are loaded potentially
+            // subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateSubtitle), userInfo: nil, repeats: true)
+            subtitlesLabel.isHidden = areSubtitlesHidden // Respect hidden setting
         } else {
             subtitles.removeAll()
             subtitlesLabel.isHidden = true
             subtitleTimer?.invalidate()
             subtitleTimer = nil
         }
-        
+
+        // Start observing playback time for progress updates
         addPeriodicTimeObserver(fullURL: fullURL, cell: cell)
-        resetSkipFlags()
-        skipIntervals.removeAll()
-        removeSkipIntervalViews()
-        
-        fetchAnimeID(title: cleanTitle(title)) { [weak self] anilistID in
-            self?.fetchMALID(anilistID: anilistID) { malID in
-                guard let malID = malID else { return }
-                let episodeNumber = Int(cell.episodeNumber) ?? 1
-                self?.fetchSkipTimes(malID: malID, episodeNumber: episodeNumber) { skipTimes in
-                    DispatchQueue.main.async {
-                        self?.skipIntervals = skipTimes
-                        self?.updateSkipButtons()
-                        self?.setupSkipButtonUpdates()
-                    }
-                }
-            }
-        }
+
+        // Fetch skip times after setting up the player
+         fetchAndSetupSkipTimes(title: title, episodeCell: cell)
     }
-    
+
     func play() {
         player?.play()
         updatePlayPauseButton()
     }
-    
+
     func pause() {
         player?.pause()
         updatePlayPauseButton()
     }
-    
+
+    // MARK: - M3U8 Handling
     private func parseM3U8(url: URL, completion: @escaping () -> Void) {
         URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let data = data, let content = String(data: data, encoding: .utf8) else {
@@ -623,975 +682,1427 @@ class CustomVideoPlayerView: UIView, AVPictureInPictureControllerDelegate, GCKRe
                 }
                 return
             }
-            
+
             let lines = content.components(separatedBy: .newlines)
-            var qualities: [(String, String)] = []
-            
+            var parsedQualities: [(String, String)] = []
+
             for (index, line) in lines.enumerated() {
                 if line.contains("#EXT-X-STREAM-INF") {
-                    if let resolutionPart = line.components(separatedBy: "RESOLUTION=").last?.components(separatedBy: ",").first,
-                       let height = resolutionPart.components(separatedBy: "x").last,
-                       let qualityNumber = ["1080", "720", "480", "360"].first(where: { height.hasPrefix($0) }),
-                       index + 1 < lines.count {
-                        let filename = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
-                        let qualityWithP = "\(qualityNumber)p"
-                        qualities.append((qualityWithP, filename))
-                    }
+                    // Try extracting RESOLUTION first
+                     var qualityName: String?
+                     if let resolutionPart = line.components(separatedBy: "RESOLUTION=").last?.components(separatedBy: ",").first,
+                        let height = resolutionPart.components(separatedBy: "x").last,
+                        let qualityNumber = ["1080", "720", "480", "360"].first(where: { height.hasPrefix($0) }) {
+                         qualityName = "\(qualityNumber)p"
+                     }
+                     // Fallback to NAME if RESOLUTION not found or invalid
+                      else if let namePart = line.components(separatedBy: "NAME=\"").last?.components(separatedBy: "\"").first {
+                          qualityName = namePart // Use the NAME attribute directly
+                      }
+
+                     // Get the filename from the next line
+                      if let name = qualityName, index + 1 < lines.count {
+                          let filename = lines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                          if !filename.isEmpty { // Ensure filename is not empty
+                               parsedQualities.append((name, filename))
+                          }
+                      }
                 }
             }
-            
+
+            // Sort qualities numerically, highest first
+             parsedQualities.sort {
+                 (Int($0.0.replacingOccurrences(of: "p", with: "")) ?? 0) >
+                 (Int($1.0.replacingOccurrences(of: "p", with: "")) ?? 0)
+             }
+
+
             DispatchQueue.main.async {
-                self?.qualities = qualities
-                print("Parsed qualities: \(qualities)")
+                self?.qualities = parsedQualities
+                print("Parsed qualities: \(parsedQualities)")
                 completion()
             }
         }.resume()
     }
-    
-    private func setQuality(index: Int) {
-        guard index < qualities.count else { return }
-        
-        currentQualityIndex = index
-        let (_, filename) = qualities[index]
-        
-        guard let baseURL = baseURL else { return }
-        let fullURL = baseURL.appendingPathComponent(filename)
-        
-        let currentTime = player?.currentTime()
-        let wasPlaying = player?.rate != 0
-        
-        let playerItem = AVPlayerItem(url: fullURL)
-        player?.replaceCurrentItem(with: playerItem)
-        
-        playerItem.addObserver(self, forKeyPath: "status", options: [.new, .initial], context: nil)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            if let time = currentTime, time.isValid && !time.seconds.isNaN {
-                self?.player?.seek(to: time) { _ in
-                    if wasPlaying {
-                        self?.player?.play()
-                    }
-                }
-            }
-            
-            self?.updateTimeLabels()
-            self?.updatePlayPauseButton()
-            self?.updateSettingsMenu()
-        }
-    }
-    
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-        if keyPath == "status", let playerItem = object as? AVPlayerItem {
-            if playerItem.status == .readyToPlay {
-                isSeekingAllowed = true
-                playerItem.removeObserver(self, forKeyPath: "status")
-                updateSettingsMenu()
-            }
-        }
-    }
-    
+
+     private func setQuality(index: Int, seekTime: Double = -1) {
+         guard index >= 0 && index < qualities.count else {
+              print("Error: Invalid quality index \(index)")
+              return
+          }
+
+         currentQualityIndex = index
+         let (_, filename) = qualities[index]
+
+         guard let baseURL = baseURL, let fullURL = URL(string: filename, relativeTo: baseURL) else {
+               print("Error: Could not construct full URL for quality \(qualities[index].0)")
+               return
+           }
+
+          print("Setting quality to: \(qualities[index].0) - URL: \(fullURL.absoluteString)")
+
+         let currentTime = player?.currentTime() ?? CMTime.zero
+         let wasPlaying = player?.rate != 0
+         let actualSeekTime = seekTime >= 0 ? seekTime : currentTime.seconds // Use provided seekTime or current time
+
+         // Create new player item
+         let playerItem = AVPlayerItem(url: fullURL)
+         isSeekingAllowed = false // Disallow seeking until new item is ready
+         player?.replaceCurrentItem(with: playerItem)
+
+         // Observe status to handle seeking and playback state
+          playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.new, .initial], context: nil)
+
+          // Update menu immediately to reflect selection
+           updateSettingsMenu()
+
+          // Seek and resume playback *after* the item is ready (handled in observeValue)
+           // Store the state to restore after ready
+           objc_setAssociatedObject(playerItem, "seekTime", actualSeekTime, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+           objc_setAssociatedObject(playerItem, "wasPlaying", wasPlaying, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+     }
+
+
+
+    // KVO for player item status
+     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+          if keyPath == #keyPath(AVPlayerItem.status),
+             let playerItem = object as? AVPlayerItem,
+             playerItem == player?.currentItem { // Ensure it's the current item
+
+              switch playerItem.status {
+              case .readyToPlay:
+                   print("Player item ready to play.")
+                   isSeekingAllowed = true // Allow seeking now
+
+                   // Restore seek time and playback state
+                   if let seekTimeValue = objc_getAssociatedObject(playerItem, "seekTime") as? Double, seekTimeValue >= 0 {
+                       let seekCMTime = CMTime(seconds: seekTimeValue, preferredTimescale: 1)
+                       print("Seeking to stored time: \(seekTimeValue)")
+                        player?.seek(to: seekCMTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                             if finished, let wasPlaying = objc_getAssociatedObject(playerItem, "wasPlaying") as? Bool, wasPlaying {
+                                 print("Resuming playback after seek.")
+                                 self?.player?.play()
+                             }
+                         }
+                   } else if let wasPlaying = objc_getAssociatedObject(playerItem, "wasPlaying") as? Bool, wasPlaying {
+                        print("Resuming playback without seek.")
+                       player?.play()
+                   }
+
+                   updateTimeLabels() // Update labels with new duration
+                   updateSettingsMenu() // Update menu state
+
+                    // It's crucial to remove the observer *after* handling the state change
+                    // to avoid observing changes on the old item after replacement.
+                    // However, we might need to observe other properties later.
+                    // For now, removing it here if ONLY observing status. If observing more, manage removal carefully.
+                    // playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
+
+
+              case .failed:
+                  print("Player item failed: \(playerItem.error?.localizedDescription ?? "Unknown error")")
+                   showAlert(title: "Playback Error", message: playerItem.error?.localizedDescription ?? "Could not load video.")
+              case .unknown:
+                  print("Player item status unknown.")
+              @unknown default:
+                  break
+              }
+          } else {
+               super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
+           }
+      }
+
+
+    // MARK: - Time Observation & Progress Updates
     private func addPeriodicTimeObserver(fullURL: String, cell: EpisodeCell) {
+        // Remove existing observer first
+         if let token = timeObserverToken {
+             player?.removeTimeObserver(token)
+             timeObserverToken = nil
+         }
+
         let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self,
                   let currentItem = self.player?.currentItem,
-                  currentItem.duration.seconds.isFinite else {
+                  currentItem.duration.seconds.isFinite,
+                  currentItem.duration.seconds > 0 else { // Check duration validity
                       return
                   }
-            
+
             let currentTime = time.seconds
             let duration = currentItem.duration.seconds
-            let progress = currentTime / duration
-            let remainingTime = duration - currentTime
-            
-            self.cell.updatePlaybackProgress(progress: Float(progress), remainingTime: remainingTime)
-            
+
+            // Update UI progress bar and labels
+             if !self.isSeeking { // Only update if not actively seeking
+                 let progress = duration > 0 ? Float(currentTime / duration) : 0
+                 self.updateTimeLabels(progress: Double(progress)) // Update internal labels/progress
+                 self.updateProgressBarWithSkipIntervals() // Update skip visuals
+                 self.updateSeekThumbPosition(progress: CGFloat(progress)) // Update thumb position
+             }
+
+
+            // Update external cell progress
+             let remainingTime = duration - currentTime
+             self.cell.updatePlaybackProgress(progress: Float(currentTime / duration), remainingTime: remainingTime)
+
+            // Save progress
             UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(fullURL)")
             UserDefaults.standard.set(duration, forKey: "totalTime_\(fullURL)")
-            
-            let episodeNumberString = self.cell.episodeNumber
-            let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
-            let selectedMediaSource = UserDefaults.standard.string(forKey: "selectedMediaSource") ?? "AnimeWorld"
-            
-            let continueWatchingItem = ContinueWatchingItem(
-                animeTitle: self.videoTitle,
-                episodeTitle: "Ep. \(episodeNumber)",
-                episodeNumber: episodeNumber,
-                imageURL: self.animeImage,
-                fullURL: fullURL,
-                lastPlayedTime: currentTime,
-                totalTime: duration,
-                source: selectedMediaSource
-            )
-            ContinueWatchingManager.shared.saveItem(continueWatchingItem)
-            
-            let shouldSendPushUpdates = UserDefaults.standard.bool(forKey: "sendPushUpdates")
-            
-            if shouldSendPushUpdates && remainingTime / duration < 0.15 && !self.hasSentUpdate {
-                let cleanedTitle = self.cleanTitle(self.videoTitle)
-                
-                self.fetchAnimeID(title: cleanedTitle) { animeID in
-                    let aniListMutation = AniListMutation()
-                    aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumber) { result in
-                        switch result {
-                        case .success():
-                            print("Successfully updated anime progress.")
-                        case .failure(let error):
-                            print("Failed to update anime progress: \(error.localizedDescription)")
-                        }
-                    }
-                    
-                    self.hasSentUpdate = true
-                }
-            }
+
+            // Update Continue Watching Item
+             self.updateContinueWatchingItem(currentTime: currentTime, duration: duration, fullURL: fullURL)
+
+             // Send AniList Update if needed
+             self.sendPushUpdates(remainingTime: remainingTime, totalTime: duration, fullURL: fullURL)
         }
     }
-    
-    func fetchAnimeID(title: String, completion: @escaping (Int) -> Void) {
-        if let videoTitle = self.videoTitle as String? {
-            let customID = UserDefaults.standard.string(forKey: "customAniListID_\(videoTitle)")
-            
-            if let customID = customID, let id = Int(customID) {
-                completion(id)
+
+    // Update Continue Watching Item (from AnimeDetailsVC)
+     private func updateContinueWatchingItem(currentTime: Double, duration: Double, fullURL: String) {
+         // Find the episode corresponding to the fullURL (assuming cell holds the current ep info)
+          let episodeNumberString = self.cell.episodeNumber
+          let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
+
+          guard episodeNumber != 0 else { // Ensure valid episode number
+              print("Error: Could not get valid episode number for continue watching.")
+              return
+          }
+
+          let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "Unknown" // Get current source
+
+          let continueWatchingItem = ContinueWatchingItem(
+              animeTitle: self.videoTitle, // Use title stored in player view
+              episodeTitle: "Ep. \(episodeNumber)",
+              episodeNumber: episodeNumber,
+              imageURL: self.animeImage, // Use image stored in player view
+              fullURL: fullURL, // Use the correct fullURL
+              lastPlayedTime: currentTime,
+              totalTime: duration,
+              source: selectedMediaSource
+          )
+          ContinueWatchingManager.shared.saveItem(continueWatchingItem)
+      }
+
+      // Send Push Updates (from AnimeDetailsVC)
+      private func sendPushUpdates(remainingTime: Double, totalTime: Double, fullURL: String) {
+           guard UserDefaults.standard.bool(forKey: "sendPushUpdates"),
+                 totalTime > 0, remainingTime / totalTime < 0.15, !hasSentUpdate else {
+                     return
+                 }
+
+           let episodeNumberString = self.cell.episodeNumber
+           let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
+
+           guard episodeNumber != 0 else {
+                print("Error: Could not get valid episode number for AniList update.")
                 return
             }
-        }
-        
-        AnimeService.fetchAnimeID(byTitle: title) { result in
-            switch result {
-            case .success(let id):
-                completion(id)
-            case .failure(let error):
-                print("Error fetching anime ID: \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    func cleanTitle(_ title: String) -> String {
-        let unwantedStrings = ["(ITA)", "(Dub)", "(Dub ID)", "(Dublado)"]
-        var cleanedTitle = title
-        
-        for unwanted in unwantedStrings {
-            cleanedTitle = cleanedTitle.replacingOccurrences(of: unwanted, with: "")
-        }
-        
-        cleanedTitle = cleanedTitle.replacingOccurrences(of: "\"", with: "")
-        return cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    
+
+           let cleanedTitle = cleanTitle(self.videoTitle) // Use title stored here
+
+           fetchAnimeID(title: cleanedTitle) { [weak self] animeID in // Use local fetchAnimeID
+               guard animeID != 0 else {
+                   print("Could not fetch valid AniList ID for progress update.")
+                   return
+               }
+               let aniListMutation = AniListMutation()
+               aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumber) { result in
+                   switch result {
+                   case .success(): print("Successfully updated anime progress.")
+                   case .failure(let error): print("Failed to update anime progress: \(error.localizedDescription)")
+                   }
+               }
+               self?.hasSentUpdate = true // Set flag on self
+           }
+       }
+
+
+    // MARK: - UI Updates
     private func updatePlayPauseButton() {
-        let isPlaying = player?.rate != 0
+        let isPlaying = player?.rate != 0 && player?.error == nil // Check for error too
         let imageName = isPlaying ? "pause.fill" : "play.fill"
         playPauseButton.image = UIImage(systemName: imageName)
     }
-    
+
     private func timeString(from timeInterval: TimeInterval) -> String {
-        guard !timeInterval.isNaN && timeInterval.isFinite else {
-            return "00:00"
-        }
-        
+        guard !timeInterval.isNaN && timeInterval.isFinite else { return "00:00" }
         let totalSeconds = Int(max(0, timeInterval))
         let hours = totalSeconds / 3600
         let minutes = (totalSeconds % 3600) / 60
         let seconds = totalSeconds % 60
-        
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%02d:%02d", minutes, seconds)
-        }
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds) : String(format: "%02d:%02d", minutes, seconds)
     }
-    
-    @objc private func handleProgressPan(_ gesture: UIPanGestureRecognizer) {
-        let location = gesture.location(in: progressBarContainer)
-        let progress = max(0, min(1, (location.x - 20) / (progressBarContainer.bounds.width - 40)))
-        
-        switch gesture.state {
-        case .began:
-            isSeeking = true
-            showSeekThumb()
-            updateSeekThumbPosition(progress: CGFloat(progress))
-        case .changed:
-            updateSeekThumbPosition(progress: CGFloat(progress))
-            updateTimeLabels(progress: Double(progress))
-            seek(to: progress)
-        case .ended:
-            isSeeking = false
-            hideSeekThumb()
-            seek(to: progress)
-        default:
-            break
-        }
-    }
-    
-    @objc private func handleProgressTap(_ gesture: UITapGestureRecognizer) {
-        let location = gesture.location(in: progressBarContainer)
-        let progress = max(0, min(1, (location.x - 20) / (progressBarContainer.bounds.width - 40)))
-        seek(to: progress)
-    }
-    
-    private func showSeekThumb() {
-        UIView.animate(withDuration: 0.2) {
-            self.seekThumbWidthConstraint?.constant = 16
-            self.seekThumb.alpha = 1
-            self.layoutIfNeeded()
-        }
-    }
-    
-    private func hideSeekThumb() {
-        UIView.animate(withDuration: 0.2) {
-            self.seekThumbWidthConstraint?.constant = 4
-            self.seekThumb.alpha = 0
-            self.layoutIfNeeded()
-        }
-    }
-    
-    private func updateSeekThumbPosition(progress: CGFloat) {
-        let thumbCenterX = playerProgress.frame.width * progress
-        seekThumbCenterXConstraint?.constant = thumbCenterX
-        layoutIfNeeded()
-    }
-    
-    private func seek(to progress: Double) {
-        guard let duration = player?.currentItem?.duration else { return }
-        let seekTime = CMTime(seconds: progress * CMTimeGetSeconds(duration), preferredTimescale: 1)
-        player?.seek(to: seekTime)
-    }
-    
+
     private func updateTimeLabels() {
-        guard let currentItem = player?.currentItem,
-              let player = player else { return }
-        
-        let currentTime = CMTimeGetSeconds(player.currentTime())
-        let duration = CMTimeGetSeconds(currentItem.duration)
-        
-        guard duration > 0 else { return }
-        
-        let progress = currentTime / duration
-        updateTimeLabels(progress: progress)
-    }
-    
-    private func updateTimeLabels(progress: Double) {
-        guard let duration = player?.currentItem?.duration else { return }
-        let currentTime = progress * CMTimeGetSeconds(duration)
-        let remainingTime = CMTimeGetSeconds(duration) - currentTime
-        
+        guard let currentItem = player?.currentItem, currentItem.duration.seconds.isFinite, currentItem.duration.seconds > 0 else {
+            currentTimeLabel.text = "00:00"
+            totalTimeLabel.text = "00:00"
+             playerProgress.progress = 0
+             updateSeekThumbPosition(progress: 0) // Reset thumb
+            return
+        }
+        let currentTime = player?.currentTime().seconds ?? 0
+        let duration = currentItem.duration.seconds
+        let remainingTime = duration - currentTime
+        let progress = Float(currentTime / duration)
+
         currentTimeLabel.text = timeString(from: currentTime)
-        totalTimeLabel.text = "-" + timeString(from: remainingTime)
-        
-        playerProgress.progress = Float(progress)
-        updateProgressBarWithSkipIntervals()
+        totalTimeLabel.text = "-\(timeString(from: remainingTime))" // Show remaining time
+        playerProgress.progress = progress
+         updateSeekThumbPosition(progress: CGFloat(progress)) // Update thumb with current progress
     }
-    
+
+    private func updateTimeLabels(progress: Double) {
+         guard let duration = player?.currentItem?.duration, duration.seconds.isFinite, duration.seconds > 0 else { return }
+         let totalDurationSeconds = CMTimeGetSeconds(duration)
+         let currentTime = progress * totalDurationSeconds
+         let remainingTime = totalDurationSeconds - currentTime
+
+         currentTimeLabel.text = timeString(from: currentTime)
+         totalTimeLabel.text = "-\(timeString(from: remainingTime))"
+         playerProgress.progress = Float(progress)
+          // No need to update thumb position here, as this is called *from* the seek gesture
+     }
+
+
+    // MARK: - Controls Visibility
     private func showControls() {
         isControlsVisible = true
         UIView.animate(withDuration: 0.3) {
             self.controlsContainerView.alpha = 1
-            self.progressBarContainer.alpha = 1
-            self.skipButtonsBottomConstraint?.constant = -5
-            self.layoutIfNeeded()
+            // Animate skip buttons together with controls
+             self.skipButtonsBottomConstraint?.constant = -5 // Move buttons up
+            self.view.layoutIfNeeded() // Animate constraint change
         }
         resetHideControlsTimer()
     }
-    
+
     private func hideControls() {
-        if !isSeeking {
+        if !isSeeking { // Don't hide if user is actively seeking
             isControlsVisible = false
             UIView.animate(withDuration: 0.3) {
                 self.controlsContainerView.alpha = 0
-                self.skipButtonsBottomConstraint?.constant = 35
-                self.layoutIfNeeded()
+                // Animate skip buttons down when controls hide
+                 self.skipButtonsBottomConstraint?.constant = 35 // Move buttons off-screen slightly
+                 self.view.layoutIfNeeded()
             }
         }
     }
-    
+
     private func resetHideControlsTimer() {
         hideControlsTimer?.invalidate()
         hideControlsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
             self?.hideControls()
         }
     }
-    
+
+    // MARK: - Button Actions
     @objc private func playPauseButtonTapped() {
-        if player?.rate == 0 {
-            player?.play()
-        } else {
-            player?.pause()
-        }
-        updatePlayPauseButton()
+        if player?.rate == 0 { play() }
+        else { pause() }
         resetHideControlsTimer()
     }
-    
+
     @objc private func rewindButtonTapped() {
         guard let currentTime = player?.currentTime() else { return }
-        
         let newTime = max(CMTimeGetSeconds(currentTime) - 10, 0)
         player?.seek(to: CMTime(seconds: newTime, preferredTimescale: 1))
         resetHideControlsTimer()
     }
-    
+
     @objc private func forwardButtonTapped() {
-        guard let currentTime = player?.currentTime(),
-              let duration = player?.currentItem?.duration else { return }
-        
+        guard let currentTime = player?.currentTime(), let duration = player?.currentItem?.duration else { return }
         let newTime = min(CMTimeGetSeconds(currentTime) + 10, CMTimeGetSeconds(duration))
         player?.seek(to: CMTime(seconds: newTime, preferredTimescale: 1))
         resetHideControlsTimer()
     }
-    
-    @objc private func handleTap() {
-        if isControlsVisible {
-            hideControls()
-        } else {
-            showControls()
-        }
-    }
-    
-    @objc private func speedButtonTapped() {
-        updateSpeedMenu()
-    }
-    
-    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began {
-            let holdSpeed = UserDefaults.standard.float(forKey: "holdSpeedPlayer")
-            player?.rate = holdSpeed
-            speedIndicatorLabel.text = String(format: "%.2fx Speed", holdSpeed)
-            speedIndicatorLabel.isHidden = false
-            speedIndicatorBackgroundView.isHidden = false
-        } else if gesture.state == .ended {
-            player?.rate = 1.0
-            speedIndicatorLabel.isHidden = true
-            speedIndicatorBackgroundView.isHidden = true
-        }
-        
-        updateSpeedMenu()
-    }
-    
-    private func updateSpeedMenu() {
-        let speedOptions: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-        let currentRate = player?.rate ?? 1.0
-        
-        let speedMenuItems = speedOptions.map { speed in
-            UIAction(title: "\(speed)x", state: (currentRate == speed) ? .on : .off) { [weak self] _ in
-                self?.player?.rate = speed
-                self?.speedIndicatorLabel.text = "\(speed)x Speed"
-                self?.speedIndicatorLabel.isHidden = (speed == 1.0)
-                self?.speedIndicatorBackgroundView.isHidden = (speed == 1.0)
-                self?.updateSpeedMenu()
-            }
-        }
-        
-        let speedMenu = UIMenu(title: "Select Speed", children: speedMenuItems)
-        speedButton.menu = speedMenu
-    }
-    
-    private func updateSettingsMenu() {
-        var menuItems: [UIMenuElement] = []
-        
-        if !qualities.isEmpty {
-            let qualityItems = qualities.enumerated().map { (index, quality) in
-                UIAction(title: quality.0, state: index == currentQualityIndex ? .on : .off) { [weak self] _ in
-                    self?.setQuality(index: index)
-                }
-            }
-            let qualitySubmenu = UIMenu(title: "Quality", image: UIImage(systemName: "rectangle.3.offgrid"), children: qualityItems)
-            menuItems.append(qualitySubmenu)
-        }
-        
-        if !subtitles.isEmpty || subtitlesURL != nil {
-            let fontSizeOptions: [CGFloat] = [14, 16, 18, 20, 22, 24]
-            let fontSizeItems = fontSizeOptions.map { size in
-                UIAction(title: "\(Int(size))pt", state: subtitleFontSize == size ? .on : .off) { [weak self] _ in
-                    self?.subtitleFontSize = size
-                    self?.updateSubtitleAppearance()
-                    self?.updateSettingsMenu()
-                    self?.saveSettings()
-                }
-            }
-            let fontSizeSubmenu = UIMenu(title: "Font Size", children: fontSizeItems)
-            
-            let colorOptions: [(String, UIColor)] = [
-                ("Yellow", .yellow), ("White", .white), ("Green", .green),
-                ("Red", .red), ("Blue", .blue), ("Black", .black)
-            ]
-            let colorItems = colorOptions.map { (name, color) in
-                UIAction(title: name, state: subtitleColor == color ? .on : .off) { [weak self] _ in
-                    self?.subtitleColor = color
-                    self?.updateSubtitleAppearance()
-                    self?.updateSettingsMenu()
-                    self?.saveSettings()
-                }
-            }
-            let colorSubmenu = UIMenu(title: "Color", children: colorItems)
-            
-            let borderWidthOptions: [CGFloat] = [0, 1, 2, 3, 4, 5]
-            let borderWidthItems = borderWidthOptions.map { width in
-                UIAction(title: "\(Int(width))pt", state: subtitleBorderWidth == width ? .on : .off) { [weak self] _ in
-                    self?.subtitleBorderWidth = width
-                    self?.updateSubtitleAppearance()
-                    self?.updateSettingsMenu()
-                    self?.saveSettings()
-                }
-            }
-            let borderWidthSubmenu = UIMenu(title: "Shadow Intensity", children: borderWidthItems)
-            
-            let hideSubtitlesAction = UIAction(title: "Hide Subtitles", state: areSubtitlesHidden ? .on : .off) { [weak self] _ in
-                self?.toggleSubtitles()
-                self?.saveSettings()
-            }
-            
-            let isGoogleTranslateEnabled = UserDefaults.standard.bool(forKey: "googleTranslation")
-            let subtitlesTranslationAction = UIAction(title: "Subtitles Translation", state: isGoogleTranslateEnabled ? .on : .off) { _ in
-                UserDefaults.standard.set(!isGoogleTranslateEnabled, forKey: "googleTranslation")
-                self.updateSettingsMenu()
-            }
-            
-            let currentLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
-            let languageOptions: [(String, String)] = [
-                ("ar", "Arabic"), ("bg", "Bulgarian"), ("cs", "Czech"), ("da", "Danish"),
-                ("de", "German"), ("el", "Greek"), ("es", "Spanish"), ("et", "Estonian"),
-                ("fi", "Finnish"), ("fr", "French"), ("hu", "Hungarian"), ("id", "Indonesian"),
-                ("it", "Italian"), ("ja", "Japanese"), ("ko", "Korean"), ("lt", "Lithuanian"),
-                ("lv", "Latvian"), ("nl", "Dutch"), ("pl", "Polish"), ("pt", "Portuguese"),
-                ("ro", "Romanian"), ("ru", "Russian"), ("sk", "Slovak"), ("sl", "Slovenian"),
-                ("sv", "Swedish"), ("tr", "Turkish"), ("uk", "Ukrainian")
-            ]
-            let languageItems = languageOptions.map { (code, name) in
-                UIAction(title: name, state: currentLanguage == code ? .on : .off) { _ in
-                    UserDefaults.standard.set(code, forKey: "translationLanguage")
-                    self.updateSettingsMenu()
-                    self.saveSettings()
-                }
-            }
-            let languageSubmenu = UIMenu(title: "Translation Language", children: languageItems)
-            
-            let subtitleSettingsSubmenu = UIMenu(title: "Subtitles Settings", image: UIImage(systemName: "captions.bubble"), children: [
-                hideSubtitlesAction,
-                subtitlesTranslationAction,
-                languageSubmenu,
-                fontSizeSubmenu,
-                colorSubmenu,
-                borderWidthSubmenu
-            ])
-            menuItems.append(subtitleSettingsSubmenu)
-        }
-        
-        let aspectRatioOptions = ["Fit", "Fill"]
-        let currentGravity = playerLayer?.videoGravity ?? .resizeAspect
-        let aspectRatioItems = aspectRatioOptions.map { option in
-            UIAction(title: option, state: (option == "Fit" && currentGravity == .resizeAspect) || (option == "Fill" && currentGravity == .resizeAspectFill) ? .on : .off) { [weak self] _ in
-                self?.playerLayer?.videoGravity = option == "Fit" ? .resizeAspect : .resizeAspectFill
-                self?.updateSettingsMenu()
-                self?.saveSettings()
-            }
-        }
-        let aspectRatioSubmenu = UIMenu(title: "Aspect Ratio", image: UIImage(systemName: "rectangle.arrowtriangle.2.outward"), children: aspectRatioItems)
-        menuItems.append(aspectRatioSubmenu)
-        
-        let brightnessAction = UIAction(title: "Full Brightness", image: UIImage(systemName: "sun.max"), state: isFullBrightness ? .on : .off) { [weak self] _ in
-            self?.toggleFullBrightness()
-            self?.saveSettings()
-        }
-        menuItems.append(brightnessAction)
-        
-        let mainMenu = UIMenu(title: "Settings", children: menuItems)
-        settingsButton.menu = mainMenu
-    }
-    
-    private func toggleSubtitles() {
-        areSubtitlesHidden.toggle()
-        subtitlesLabel.isHidden = areSubtitlesHidden
-        updateSettingsMenu()
-    }
-    
-    private func toggleFullBrightness() {
-        isFullBrightness.toggle()
-        if isFullBrightness {
-            originalBrightness = UIScreen.main.brightness
-            UIScreen.main.brightness = 1.0
-        } else {
-            UIScreen.main.brightness = originalBrightness
-        }
-        updateSettingsMenu()
-    }
-    
-    private func updateSpeedIndicator(speed: Float) {
-        speedIndicatorLabel.text = "\(speed)x Speed"
-        speedIndicatorLabel.isHidden = (speed == 1.0)
-        speedIndicatorBackgroundView.isHidden = (speed == 1.0)
-    }
-    
-    @objc private func playerItemDidReachEnd(notification: Notification) {
-        player?.pause()
-        updatePlayPauseButton()
-        
-        if isFullBrightness {
-            UIScreen.main.brightness = originalBrightness
-            isFullBrightness = false
-            updateSettingsMenu()
-        }
-        
-        showControls()
-        
-        playerProgress.progress = 1.0
-        
-        if let duration = player?.currentItem?.duration {
-            currentTimeLabel.text = timeString(from: CMTimeGetSeconds(duration))
-            totalTimeLabel.text = "-00:00"
-        }
-        
-        if UserDefaults.standard.bool(forKey: "skipFeedbacks") && !hasVotedForSkipTimes {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.showSkipVoteAlert()
-            }
-        }
-    }
-    
+
+    // speedButtonTapped removed as it's handled by showsMenuAsPrimaryAction
+
     @objc private func dismissButtonTapped() {
-        self.hasSentUpdate = false
-        findViewController()?.dismiss(animated: true, completion: nil)
-    }
-    
+         // Restore brightness before dismissing if needed
+          if isFullBrightness {
+               UIScreen.main.brightness = originalBrightness
+           }
+          hasSentUpdate = false // Allow potential update on next play
+         findViewController()?.dismiss(animated: true, completion: nil)
+     }
+
+
     @objc private func pipButtonTapped() {
         if let pipController = pipController {
             if pipController.isPictureInPictureActive {
                 pipController.stopPictureInPicture()
             } else {
-                pipController.startPictureInPicture()
+                 // Check if PiP is possible before starting
+                 if pipController.isPictureInPicturePossible {
+                      pipController.startPictureInPicture()
+                  } else {
+                       print("Picture in Picture is not possible at this moment.")
+                       showAlert(title: "PiP Not Available", message: "Picture in Picture cannot be started right now.")
+                   }
             }
         }
     }
-    
-    private func loadSubtitles(from url: URL) {
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            guard let self = self, let data = data else { return }
-            
-            SubtitlesLoader.parseSubtitles(data: data) { [weak self] cues in
-                DispatchQueue.main.async {
-                    self?.subtitles = cues
-                }
-            }
-        }.resume()
+
+    // MARK: - Gesture Handling
+    @objc private func handleTap() {
+        if isControlsVisible { hideControls() }
+        else { showControls() }
     }
-    
-    @objc private func updateSubtitle() {
-        guard !areSubtitlesHidden, let player = player else { return }
-        
-        let currentTime = player.currentTime()
-        let isTranslationEnabled = UserDefaults.standard.bool(forKey: "googleTranslation")
-        let currentTranslationLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
-        
-        if let index = subtitles.firstIndex(where: {
-            CMTimeCompare(currentTime, $0.startTime) >= 0 && CMTimeCompare(currentTime, $0.endTime) <= 0
-        }) {
-            if index != currentSubtitleIndex || lastTranslationLanguage != currentTranslationLanguage {
-                currentSubtitleIndex = index
-                lastTranslationLanguage = currentTranslationLanguage
-                
-                SubtitlesLoader.getTranslatedSubtitle(subtitles[index] as SubtitleCue) { [weak self] translatedCue in
-                    DispatchQueue.main.async {
-                        if self?.currentSubtitleIndex == index {
-                            if isTranslationEnabled {
-                                self?.subtitlesLabel.text = translatedCue.getTranslation(for: currentTranslationLanguage) ?? translatedCue.originalText
-                            } else {
-                                self?.subtitlesLabel.text = translatedCue.originalText
-                            }
-                        }
-                    }
-                }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            let holdSpeed = UserDefaults.standard.float(forKey: "holdSpeedPlayer")
+            player?.rate = holdSpeed > 0 ? holdSpeed : 2.0 // Apply hold speed
+            updateSpeedIndicator(speed: holdSpeed > 0 ? holdSpeed : 2.0) // Show indicator
+        case .ended, .cancelled:
+             // Restore to the speed selected via the speed menu (default 1.0 if none selected)
+              let selectedSpeed = UserDefaults.standard.float(forKey: "playerSpeed") // Assuming you save selected speed
+              player?.rate = selectedSpeed > 0 ? selectedSpeed : 1.0
+             updateSpeedIndicator(speed: selectedSpeed > 0 ? selectedSpeed : 1.0) // Update indicator or hide if 1.0
+        default:
+            break
+        }
+         updateSpeedMenu() // Refresh menu state after any change
+    }
+
+
+    @objc private func handleProgressPan(_ gesture: UIPanGestureRecognizer) {
+        guard isSeekingAllowed else { return } // Prevent seeking if not ready
+
+        let location = gesture.location(in: progressBarContainer)
+        // Adjust calculation based on the actual tappable width (progressBarContainer width)
+        let progress = max(0, min(1, location.x / progressBarContainer.bounds.width))
+
+        switch gesture.state {
+        case .began:
+            isSeeking = true
+            showSeekThumb() // Show thumb when seeking starts
+            updateSeekThumbPosition(progress: CGFloat(progress))
+        case .changed:
+            updateSeekThumbPosition(progress: CGFloat(progress))
+            // Update time labels immediately as user scrubs
+             updateTimeLabels(progress: Double(progress))
+              // Optional: Seek immediately on change for smoother scrubbing, but can be resource-intensive
+             // seek(to: Double(progress))
+        case .ended:
+            isSeeking = false
+            hideSeekThumb() // Hide thumb when seeking ends
+            seek(to: Double(progress)) // Seek to final position
+            resetHideControlsTimer() // Reset timer after interaction
+        case .cancelled, .failed:
+              isSeeking = false
+              hideSeekThumb()
+              resetHideControlsTimer()
+        default:
+            break
+        }
+    }
+
+
+    @objc private func handleProgressTap(_ gesture: UITapGestureRecognizer) {
+        guard isSeekingAllowed else { return } // Prevent seeking if not ready
+
+        let location = gesture.location(in: progressBarContainer)
+        let progress = max(0, min(1, location.x / progressBarContainer.bounds.width))
+        seek(to: progress)
+        resetHideControlsTimer() // Reset timer after interaction
+    }
+
+
+    // MARK: - Seeking Logic
+     private func showSeekThumb(animated: Bool = true) {
+         seekThumbWidthConstraint?.constant = 16 // Make thumb larger
+          if animated {
+              UIView.animate(withDuration: 0.2) {
+                  self.seekThumb.alpha = 1
+                  self.layoutIfNeeded()
+              }
+          } else {
+               self.seekThumb.alpha = 1
+               self.layoutIfNeeded()
+           }
+      }
+
+      private func hideSeekThumb(animated: Bool = true) {
+          seekThumbWidthConstraint?.constant = 0 // Make thumb very small or zero width
+           if animated {
+               UIView.animate(withDuration: 0.2) {
+                   self.seekThumb.alpha = 0
+                   self.layoutIfNeeded()
+               }
+           } else {
+                self.seekThumb.alpha = 0
+                self.layoutIfNeeded()
             }
+       }
+
+    private func updateSeekThumbPosition(progress: CGFloat) {
+         guard let progressWidth = playerProgress?.bounds.width, progressWidth > 0 else { return }
+         // Calculate center X based on progress within the progress bar's bounds
+         let thumbCenterX = progressWidth * progress
+         seekThumbCenterXConstraint?.constant = thumbCenterX
+         // Animate the constraint change for smoother movement
+          UIView.animate(withDuration: 0.05) { // Short duration for smooth tracking
+              self.layoutIfNeeded()
+          }
+     }
+
+     private func seek(to progress: Double) {
+          guard let duration = player?.currentItem?.duration, duration.seconds.isFinite, duration.seconds > 0 else { return }
+          let seekTimeSeconds = progress * CMTimeGetSeconds(duration)
+          let seekTime = CMTime(seconds: seekTimeSeconds, preferredTimescale: 1)
+          print("Seeking to: \(seekTimeSeconds)s (\(progress * 100)%)")
+          player?.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+               if finished {
+                    print("Seek finished.")
+                     // Update UI immediately after seek completion if needed
+                     // self?.updateTimeLabels() // Already updated periodically
+                 } else {
+                      print("Seek cancelled or interrupted.")
+                  }
+              }
+      }
+
+
+    // MARK: - Menu Updates
+    private func updateSpeedMenu() {
+        let speedOptions: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+         // Use the player's actual rate unless it's the hold speed rate
+         let currentRate = (player?.rate == UserDefaults.standard.float(forKey: "holdSpeedPlayer") && holdGesture?.state == .began) ? 1.0 : (player?.rate ?? 1.0) // Default to 1.0 if hold active
+
+        let speedMenuItems = speedOptions.map { speed in
+            UIAction(title: "\(speed)x", state: (abs(currentRate - speed) < 0.01) ? .on : .off) { [weak self] _ in // Use tolerance for float comparison
+                self?.player?.rate = speed
+                 UserDefaults.standard.set(speed, forKey: "playerSpeed") // Save selected speed
+                self?.updateSpeedIndicator(speed: speed)
+                self?.updateSpeedMenu() // Refresh menu to show new selection
+                 self?.resetHideControlsTimer() // Keep controls visible after selection
+            }
+        }
+
+        let speedMenu = UIMenu(title: "Select Speed", children: speedMenuItems)
+        speedButton.menu = speedMenu
+    }
+
+     private func updateSettingsMenu() {
+         var menuItems: [UIMenuElement] = []
+
+         // --- Quality Submenu ---
+         if !qualities.isEmpty {
+             let qualityItems = qualities.enumerated().map { (index, quality) in
+                 UIAction(title: quality.0, state: index == currentQualityIndex ? .on : .off) { [weak self] _ in
+                     self?.setQuality(index: index)
+                     self?.resetHideControlsTimer()
+                 }
+             }
+             let qualitySubmenu = UIMenu(title: "Quality", image: UIImage(systemName: "rectangle.3.group"), children: qualityItems) // Changed icon
+             menuItems.append(qualitySubmenu)
+         }
+
+         // --- Subtitles Submenu ---
+         if !subtitles.isEmpty || subtitlesURL != nil { // Show even if only external URL exists initially
+             let fontSizeOptions: [CGFloat] = [14, 16, 18, 20, 22, 24]
+             let fontSizeItems = fontSizeOptions.map { size in
+                 UIAction(title: "\(Int(size))pt", state: subtitleFontSize == size ? .on : .off) { [weak self] _ in
+                     self?.subtitleFontSize = size
+                     self?.updateSubtitleAppearance()
+                     self?.updateSettingsMenu()
+                     self?.saveSettings()
+                      self?.resetHideControlsTimer()
+                 }
+             }
+             let fontSizeSubmenu = UIMenu(title: "Font Size", children: fontSizeItems)
+
+             let colorOptions: [(String, UIColor)] = [("White", .white), ("Yellow", .yellow), ("Green", .systemGreen), ("Red", .systemRed), ("Blue", .systemBlue), ("Black", .black)]
+             let colorItems = colorOptions.map { (name, color) in
+                 UIAction(title: name, state: subtitleColor == color ? .on : .off) { [weak self] _ in
+                     self?.subtitleColor = color
+                     self?.updateSubtitleAppearance()
+                     self?.updateSettingsMenu()
+                     self?.saveSettings()
+                      self?.resetHideControlsTimer()
+                 }
+             }
+             let colorSubmenu = UIMenu(title: "Color", children: colorItems)
+
+             let borderWidthOptions: [CGFloat] = [0, 1, 2, 3, 4, 5]
+             let borderWidthItems = borderWidthOptions.map { width in
+                 UIAction(title: "\(Int(width))pt", state: subtitleBorderWidth == width ? .on : .off) { [weak self] _ in
+                     self?.subtitleBorderWidth = width
+                     self?.updateSubtitleAppearance()
+                     self?.updateSettingsMenu()
+                     self?.saveSettings()
+                      self?.resetHideControlsTimer()
+                 }
+             }
+             let borderWidthSubmenu = UIMenu(title: "Shadow Intensity", children: borderWidthItems)
+
+             let hideSubtitlesAction = UIAction(title: "Hide Subtitles", image: UIImage(systemName: areSubtitlesHidden ? "eye.slash" : "eye"), state: areSubtitlesHidden ? .on : .off) { [weak self] _ in // Added image
+                 self?.toggleSubtitles()
+                 self?.saveSettings()
+                  self?.resetHideControlsTimer()
+             }
+
+             let isGoogleTranslateEnabled = UserDefaults.standard.bool(forKey: "googleTranslation")
+             let subtitlesTranslationAction = UIAction(title: "Real-Time Translation", image: UIImage(systemName: "character.bubble"), state: isGoogleTranslateEnabled ? .on : .off) { _ in // Added image
+                 UserDefaults.standard.set(!isGoogleTranslateEnabled, forKey: "googleTranslation")
+                 self.updateSettingsMenu()
+                  self.resetHideControlsTimer()
+             }
+
+             let currentLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
+              let languageOptions: [(String, String)] = [("en", "English"), ("ar", "Arabic"), ("bg", "Bulgarian"), ("cs", "Czech"), ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("es", "Spanish"), ("et", "Estonian"), ("fi", "Finnish"), ("fr", "French"), ("hu", "Hungarian"), ("id", "Indonesian"), ("it", "Italian"), ("ja", "Japanese"), ("ko", "Korean"), ("lt", "Lithuanian"), ("lv", "Latvian"), ("nl", "Dutch"), ("pl", "Polish"), ("pt", "Portuguese"), ("ro", "Romanian"), ("ru", "Russian"), ("sk", "Slovak"), ("sl", "Slovenian"), ("sv", "Swedish"), ("tr", "Turkish"), ("uk", "Ukrainian")] // Added English
+
+             let languageItems = languageOptions.map { (code, name) in
+                 UIAction(title: name, state: currentLanguage == code ? .on : .off) { _ in
+                     UserDefaults.standard.set(code, forKey: "translationLanguage")
+                     self.updateSettingsMenu()
+                     self.saveSettings()
+                      self.resetHideControlsTimer()
+                 }
+             }
+             let languageSubmenu = UIMenu(title: "Translation Language", children: languageItems)
+
+             // Only show translation options if enabled
+              var subtitleChildren: [UIMenuElement] = [hideSubtitlesAction, fontSizeSubmenu, colorSubmenu, borderWidthSubmenu]
+              if UserDefaults.standard.bool(forKey: "googleTranslationEnabledMain") { // Check main toggle
+                  subtitleChildren.append(subtitlesTranslationAction)
+                   if isGoogleTranslateEnabled { // Only show language if translation is active
+                       subtitleChildren.append(languageSubmenu)
+                   }
+               }
+
+
+             let subtitleSettingsSubmenu = UIMenu(title: "Subtitles", image: UIImage(systemName: "captions.bubble"), children: subtitleChildren) // Changed title
+             menuItems.append(subtitleSettingsSubmenu)
+         }
+
+         // --- Aspect Ratio Submenu ---
+         let aspectRatioOptions = ["Fit", "Fill"]
+         let currentGravity = playerLayer?.videoGravity ?? .resizeAspect
+         let aspectRatioItems = aspectRatioOptions.map { option in
+             UIAction(title: option, state: (option == "Fit" && currentGravity == .resizeAspect) || (option == "Fill" && currentGravity == .resizeAspectFill) ? .on : .off) { [weak self] _ in
+                 self?.playerLayer?.videoGravity = option == "Fit" ? .resizeAspect : .resizeAspectFill
+                 self?.updateSettingsMenu()
+                 self?.saveSettings()
+                  self?.resetHideControlsTimer()
+             }
+         }
+         let aspectRatioSubmenu = UIMenu(title: "Aspect Ratio", image: UIImage(systemName: "aspectratio"), children: aspectRatioItems) // Changed icon
+         menuItems.append(aspectRatioSubmenu)
+
+         // --- Full Brightness Action ---
+         let brightnessAction = UIAction(title: "Full Brightness", image: UIImage(systemName: "sun.max"), state: isFullBrightness ? .on : .off) { [weak self] _ in
+             self?.toggleFullBrightness()
+             self?.saveSettings()
+              self?.resetHideControlsTimer()
+         }
+         menuItems.append(brightnessAction)
+
+         // --- Main Settings Menu ---
+         let mainMenu = UIMenu(title: "Settings", children: menuItems)
+         settingsButton.menu = mainMenu
+     }
+
+
+    private func toggleSubtitles() {
+        areSubtitlesHidden.toggle()
+        subtitlesLabel.isHidden = areSubtitlesHidden
+        updateSettingsMenu() // Update menu to reflect state change
+    }
+
+    private func toggleFullBrightness() {
+        isFullBrightness.toggle()
+        if isFullBrightness {
+            originalBrightness = UIScreen.main.brightness // Store current brightness
+            UIScreen.main.brightness = 1.0 // Set to full
         } else {
-            currentSubtitleIndex = nil
-            subtitlesLabel.text = nil
+            UIScreen.main.brightness = originalBrightness // Restore original
         }
+        updateSettingsMenu() // Update menu state
     }
-    
-    func proceedWithCasting(videoURL: URL) {
-        DispatchQueue.main.async {
-            let metadata = GCKMediaMetadata(metadataType: .movie)
-            
-            if UserDefaults.standard.bool(forKey: "fullTitleCast") {
-                metadata.setString(self.videoTitle.isEmpty ? "Unknown Title" : self.videoTitle, forKey: kGCKMetadataKeyTitle)
+
+     private func updateSpeedIndicator(speed: Float) {
+         // Only show indicator if speed is not 1.0
+         speedIndicatorLabel.text = String(format: "%.2fx Speed", speed)
+          let shouldHide = abs(speed - 1.0) < 0.01 // Hide if speed is effectively 1.0
+          speedIndicatorLabel.isHidden = shouldHide
+          speedIndicatorBackgroundView.isHidden = shouldHide
+
+          // Fade in/out animation
+           UIView.animate(withDuration: 0.3) {
+                self.speedIndicatorLabel.alpha = shouldHide ? 0 : 1
+                self.speedIndicatorBackgroundView.alpha = shouldHide ? 0 : 1
+            }
+      }
+
+
+    // MARK: - Playback End & Dismissal
+    @objc private func playerItemDidReachEnd(notification: Notification) {
+         // Ensure the notification is for the currently playing item
+          guard let playerItem = notification.object as? AVPlayerItem,
+                playerItem == player?.currentItem else {
+                    return
+                }
+
+        pause() // Ensure player is paused visually
+        resetHideControlsTimer() // Prevent controls from hiding immediately
+        showControls() // Show controls at the end
+
+        // Reset progress to end state
+        playerProgress.progress = 1.0
+        updateSeekThumbPosition(progress: 1.0) // Move thumb to end
+        if let duration = player?.currentItem?.duration {
+            currentTimeLabel.text = timeString(from: CMTimeGetSeconds(duration))
+            totalTimeLabel.text = "-00:00"
+        }
+
+        // Handle voting if enabled and not already voted
+        if UserDefaults.standard.bool(forKey: "skipFeedbacks") && !hasVotedForSkipTimes {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.showSkipVoteAlert()
+            }
+        }
+
+         // Handle autoplay
+         if UserDefaults.standard.bool(forKey: "AutoPlay") {
+              // Need a way to trigger the next episode from AnimeDetailViewController
+              // This requires communication back (e.g., delegate or notification)
+              print("Autoplay triggered (needs implementation to call next episode)")
+               // Example using a delegate (assuming CustomPlayerView has one)
+               // delegate?.customPlayerDidFinishPlaying()
+                // For now, just dismiss
+                dismissPlayer()
+
+
+          } else {
+               // If autoplay is off, maybe just stay here or offer replay?
+               // For now, let's keep it simple and potentially dismiss later if user taps close
+               print("Autoplay off, playback finished.")
+           }
+
+    }
+
+    private func dismissPlayer() {
+         // Restore brightness before dismissing
+          if isFullBrightness {
+               UIScreen.main.brightness = originalBrightness
+               isFullBrightness = false
+           }
+          hasSentUpdate = false // Reset update flag for next potential play
+         findViewController()?.dismiss(animated: true, completion: nil)
+     }
+
+    @objc private func dismissButtonTapped() {
+         dismissPlayer()
+     }
+
+    // MARK: - PiP Delegate Methods
+    @objc private func pipButtonTapped() {
+        if let pipController = pipController {
+            if pipController.isPictureInPictureActive {
+                pipController.stopPictureInPicture()
             } else {
-                let episodeNumberString = self.cell.episodeNumber
-                let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
-                metadata.setString("Episode \(episodeNumber)", forKey: kGCKMetadataKeyTitle)
+                 if pipController.isPictureInPicturePossible {
+                      pipController.startPictureInPicture()
+                  } else {
+                       print("Picture in Picture is not possible at this moment.")
+                        showAlert(title: "PiP Not Available", message: "Picture in Picture cannot be started right now.")
+                   }
             }
-            
-            if UserDefaults.standard.bool(forKey: "animeImageCast"),
-               let imageURL = URL(string: self.animeImage) {
-                metadata.addImage(GCKImage(url: imageURL, width: 480, height: 720))
-            }
-            
-            let builder = GCKMediaInformationBuilder(contentURL: videoURL)
-            
-            let contentType: String
-            switch videoURL.pathExtension.lowercased() {
-            case "m3u8":
-                contentType = "application/x-mpegurl"
-            case "mp4":
-                contentType = "video/mp4"
-            default:
-                contentType = "video/mp4"
-            }
-            
-            builder.contentType = contentType
-            builder.metadata = metadata
-            
-            let streamTypeString = UserDefaults.standard.string(forKey: "castStreamingType") ?? "buffered"
-            builder.streamType = (streamTypeString == "live") ? .live : .buffered
-            
-            let mediaInformation = builder.build()
-            
-            if let remoteMediaClient = GCKCastContext.sharedInstance().sessionManager.currentCastSession?.remoteMediaClient {
-                let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(self.fullURL)")
-                
-                if lastPlayedTime > 0 {
-                    let options = GCKMediaLoadOptions()
-                    options.playPosition = TimeInterval(lastPlayedTime)
-                    remoteMediaClient.loadMedia(mediaInformation, with: options)
+        }
+    }
+
+    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+         print("PiP Will Start")
+         // Optionally hide custom controls when PiP starts
+          // UIView.animate(withDuration: 0.1) { self.controlsContainerView.alpha = 0 }
+      }
+
+      func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+          print("PiP Did Start")
+      }
+
+      func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
+          print("PiP Failed to Start: \(error.localizedDescription)")
+           showAlert(title: "Picture in Picture Error", message: "Could not start Picture in Picture.")
+       }
+
+       func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+           print("PiP Will Stop")
+       }
+
+       func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+           print("PiP Did Stop")
+           // Optionally show custom controls again when PiP stops
+            // showControls()
+       }
+
+       func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+            // Re-present the view controller containing the player if it was dismissed for PiP
+            if let presentingVC = findViewController()?.presentingViewController {
+                 presentingVC.present(findViewController()!, animated: true) {
+                     completionHandler(true)
+                 }
+             } else {
+                  completionHandler(true) // Indicate handled even if no re-presentation needed
+              }
+        }
+
+
+    // MARK: - Subtitle Handling
+    private func loadSubtitles(from url: URL) {
+         URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+              guard let self = self, let data = data, error == nil else {
+                  print("Error loading subtitles: \(error?.localizedDescription ?? "Unknown error")")
+                  return
+              }
+
+              // Detect format and parse
+              SubtitlesLoader.parseSubtitles(data: data) { [weak self] cues in
+                   DispatchQueue.main.async {
+                       print("Loaded \(cues.count) subtitle cues.")
+                       self?.subtitles = cues
+                       // Start the timer only after subtitles are successfully loaded
+                        self?.subtitleTimer?.invalidate() // Invalidate previous timer if any
+                        self?.subtitleTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(self.updateSubtitle), userInfo: nil, repeats: true)
+                   }
+               }
+         }.resume()
+     }
+
+
+    @objc private func updateSubtitle() {
+         guard !areSubtitlesHidden, let player = player, !subtitles.isEmpty else {
+              if subtitlesLabel.text != nil { // Clear label if subtitles are hidden or empty
+                   subtitlesLabel.text = nil
+               }
+              return
+          }
+
+         let currentTime = player.currentTime()
+         let isTranslationEnabled = UserDefaults.standard.bool(forKey: "googleTranslation")
+         let currentTranslationLanguage = UserDefaults.standard.string(forKey: "translationLanguage") ?? "en"
+
+         // Efficiently find the current cue
+          var foundCue: SubtitleCue? = nil
+          if let currentIndex = currentSubtitleIndex,
+             currentIndex < subtitles.count,
+             CMTimeCompare(currentTime, subtitles[currentIndex].startTime) >= 0,
+             CMTimeCompare(currentTime, subtitles[currentIndex].endTime) <= 0 {
+              foundCue = subtitles[currentIndex]
+          } else {
+               // Search if current index is invalid or time is outside its range
+               if let newIndex = subtitles.firstIndex(where: { CMTimeCompare(currentTime, $0.startTime) >= 0 && CMTimeCompare(currentTime, $0.endTime) <= 0 }) {
+                    foundCue = subtitles[newIndex]
+                    currentSubtitleIndex = newIndex
                 } else {
-                    remoteMediaClient.loadMedia(mediaInformation)
+                     currentSubtitleIndex = nil // No cue found for this time
+                 }
+           }
+
+
+         if let cue = foundCue {
+             // Check if translation is needed or language changed
+             if isTranslationEnabled {
+                 if cue.getTranslation(for: currentTranslationLanguage) != nil && lastTranslationLanguage == currentTranslationLanguage {
+                      // Use cached translation
+                      subtitlesLabel.text = cue.getTranslation(for: currentTranslationLanguage)
+                  } else {
+                       // Need to translate
+                       lastTranslationLanguage = currentTranslationLanguage // Update last language attempted
+                       translateAndDisplaySubtitle(cue: cue, targetLanguage: currentTranslationLanguage)
+                   }
+             } else {
+                 // Translation disabled, show original
+                 subtitlesLabel.text = cue.originalText
+             }
+         } else {
+             // No cue active, clear the label
+             subtitlesLabel.text = nil
+         }
+     }
+
+     private func translateAndDisplaySubtitle(cue: SubtitleCue, targetLanguage: String) {
+         // Show original text while translating
+         subtitlesLabel.text = cue.originalText
+
+         // Find the index of the current cue to update it later
+         guard let cueIndex = subtitles.firstIndex(where: { $0.startTime == cue.startTime && $0.endTime == cue.endTime }) else { return }
+
+         SubtitlesLoader.getTranslatedSubtitle(cue) { [weak self] translatedCue in
+              guard let self = self else { return }
+              // Update the subtitles array with the new translation
+               self.subtitles[cueIndex] = translatedCue
+
+               // Check if this cue is *still* the current one before displaying translation
+               if self.currentSubtitleIndex == cueIndex {
+                    DispatchQueue.main.async {
+                         self.subtitlesLabel.text = translatedCue.getTranslation(for: targetLanguage) ?? translatedCue.originalText
+                     }
                 }
-            }
-        }
-    }
+          }
+      }
+
+    // MARK: - Chromecast Integration
+     func proceedWithCasting(videoURL: URL) {
+         DispatchQueue.main.async {
+             let metadata = GCKMediaMetadata(metadataType: .movie)
+
+             if UserDefaults.standard.bool(forKey: "fullTitleCast") {
+                 metadata.setString(self.videoTitle.isEmpty ? "Unknown Title" : self.videoTitle, forKey: kGCKMetadataKeyTitle)
+             } else {
+                  let episodeNumber = EpisodeNumberExtractor.extract(from: self.cell.episodeNumber)
+                  metadata.setString("Episode \(episodeNumber)", forKey: kGCKMetadataKeyTitle)
+              }
+
+             if UserDefaults.standard.bool(forKey: "animeImageCast"), let imageURL = URL(string: self.animeImage) { // Use stored image URL
+                 metadata.addImage(GCKImage(url: imageURL, width: 480, height: 720))
+             }
+
+             let builder = GCKMediaInformationBuilder(contentURL: videoURL)
+
+             // Determine content type based on URL extension
+              let contentType: String
+              let urlString = videoURL.absoluteString.lowercased()
+              if urlString.hasSuffix(".m3u8") {
+                  contentType = "application/x-mpegurl"
+              } else if urlString.hasSuffix(".mp4") {
+                  contentType = "video/mp4"
+              } else {
+                   contentType = "video/mp4" // Default guess
+               }
+              builder.contentType = contentType
+             builder.metadata = metadata
+
+             let streamTypeString = UserDefaults.standard.string(forKey: "castStreamingType") ?? "buffered"
+             builder.streamType = (streamTypeString == "live") ? .live : .buffered
+
+             let mediaInformation = builder.build()
+
+             if let remoteMediaClient = GCKCastContext.sharedInstance().sessionManager.currentCastSession?.remoteMediaClient {
+                 let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(self.fullURL)")
+                 let options = GCKMediaLoadOptions()
+                  options.playPosition = lastPlayedTime > 0 ? TimeInterval(lastPlayedTime) : 0
+                 remoteMediaClient.loadMedia(mediaInformation, with: options)
+                  remoteMediaClient.add(self) // Add listener for cast events
+             } else {
+                  print("Error: No active Google Cast session found.")
+                   self.showAlert(title: "Cast Error", message: "No active Chromecast session found.")
+               }
+         }
+     }
+
+     // GCKRemoteMediaClientListener method
+      func remoteMediaClient(_ client: GCKRemoteMediaClient, didUpdate mediaStatus: GCKMediaStatus?) {
+          if let mediaStatus = mediaStatus, mediaStatus.idleReason == .finished {
+               print("Cast media finished playing.")
+               // Handle end of playback on Cast device (e.g., autoplay next)
+                if UserDefaults.standard.bool(forKey: "AutoPlay") {
+                     print("Cast Autoplay triggered (needs implementation)")
+                      // You might need a delegate or notification to tell AnimeDetailViewController to play next
+                       // For now, perhaps just dismiss this player view if it's somehow still open
+                        // findViewController()?.dismiss(animated: true, completion: nil)
+                 }
+           }
+       }
 }
 
-extension UIView {
-    func findViewController() -> UIViewController? {
-        if let nextResponder = self.next as? UIViewController {
-            return nextResponder
-        } else if let nextResponder = self.next as? UIView {
-            return nextResponder.findViewController()
-        } else {
-            return nil
-        }
-    }
-}
+// MARK: - Gesture Recognizer Delegate
+ extension CustomVideoPlayerView: UIGestureRecognizerDelegate {
+     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+         // Allow tap gesture only if the touch is not on specific controls (like buttons or slider)
+         if gestureRecognizer is UITapGestureRecognizer {
+              let location = touch.location(in: controlsContainerView)
+              // Check if touch is outside interactive elements within the controls container
+               let isTouchOnControl = controlsContainerView.subviews.contains { subview in
+                   subview.frame.contains(location) && subview.isUserInteractionEnabled && subview is UIControl // Check if it's a UIControl
+               }
+              let isTouchOnProgressBar = progressBarContainer.frame.contains(touch.location(in: self))
 
+              // Allow tap if it's *not* on a control and *not* on the progress bar area
+              return !isTouchOnControl && !isTouchOnProgressBar
+          }
+         return true // Allow other gestures (like long press)
+     }
+ }
+
+// MARK: - Skip Time Handling (Moved from CustomPlayerView)
 extension CustomVideoPlayerView {
-    func fetchMALID(anilistID: Int, completion: @escaping (Int?) -> Void) {
-        let urlString = "https://api.ani.zip/mappings?anilist_id=\(anilistID)"
-        guard let url = URL(string: urlString) else {
-            completion(nil)
-            return
-        }
-        
-        URLSession.shared.dataTask(with: url) { data, response, error in
-            guard let data = data else {
-                completion(nil)
-                return
-            }
-            
-            do {
-                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let mappings = json["mappings"] as? [String: Any],
-                   let malID = mappings["mal_id"] as? Int {
-                    completion(malID)
-                } else {
-                    completion(nil)
-                }
-            } catch {
-                print("Error parsing JSON: \(error)")
-                completion(nil)
-            }
-        }.resume()
+    private func fetchAndSetupSkipTimes(title: String, episodeCell: EpisodeCell) {
+        let cleanedTitle = cleanTitle(title)
+        let episodeNumberString = episodeCell.episodeNumber
+        let episodeNumber = EpisodeNumberExtractor.extract(from: episodeNumberString)
+
+         guard episodeNumber != 0 else {
+             print("Invalid episode number for skip times fetch: \(episodeNumberString)")
+             return
+         }
+
+
+        fetchAnimeID(title: cleanedTitle) { [weak self] anilistID in
+             guard anilistID != 0 else { // Check for valid ID
+                 print("Could not get AniList ID for skip times.")
+                 return
+             }
+             self?.fetchMALID(anilistID: anilistID) { malID in
+                 guard let malID = malID else {
+                      print("Could not get MAL ID for skip times.")
+                      return
+                  }
+                 self?.fetchSkipTimes(malID: malID, episodeNumber: episodeNumber) { skipTimes in
+                     DispatchQueue.main.async {
+                         self?.skipIntervals = skipTimes
+                         self?.updateSkipButtons() // Create buttons based on fetched times
+                         self?.updateProgressBarWithSkipIntervals() // Draw skip sections on progress bar
+                         self?.setupSkipButtonUpdates() // Start timer to show/hide buttons
+                     }
+                 }
+             }
+         }
     }
-    
-    func fetchSkipTimes(malID: Int, episodeNumber: Int, completion: @escaping ([(String, TimeInterval, TimeInterval, String)]) -> Void) {
+
+     func fetchAnimeID(title: String, completion: @escaping (Int) -> Void) {
+          // Prioritize custom ID if set
+           if let customIDString = UserDefaults.standard.string(forKey: "customAniListID_\(title)"),
+              let customID = Int(customIDString) {
+               completion(customID)
+               return
+           }
+           // Fallback to API search
+          AnimeService.fetchAnimeID(byTitle: title) { result in
+              switch result {
+              case .success(let id):
+                  completion(id)
+              case .failure(let error):
+                  print("Error fetching anime ID for skip times: \(error.localizedDescription)")
+                   completion(0) // Indicate failure
+              }
+          }
+      }
+
+     func fetchMALID(anilistID: Int, completion: @escaping (Int?) -> Void) {
+         let urlString = "https://api.ani.zip/mappings?anilist_id=\(anilistID)"
+         guard let url = URL(string: urlString) else {
+             completion(nil)
+             return
+         }
+
+         URLSession.shared.dataTask(with: url) { data, response, error in
+             guard let data = data, error == nil else {
+                 completion(nil)
+                 return
+             }
+
+             do {
+                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                    let mappings = json["mappings"] as? [String: Any],
+                    let malID = mappings["mal_id"] as? Int {
+                     completion(malID)
+                 } else {
+                     completion(nil)
+                 }
+             } catch {
+                 print("Error parsing MAL ID JSON: \(error)")
+                 completion(nil)
+             }
+         }.resume()
+     }
+
+    func fetchSkipTimes(malID: Int, episodeNumber: Int, completion: @escaping ([(type: String, start: TimeInterval, end: TimeInterval, id: String)]) -> Void) { // Added 'id'
         let savedAniSkipInstance = UserDefaults.standard.string(forKey: "savedAniSkipInstance") ?? ""
-        
         let baseURL = savedAniSkipInstance.isEmpty ? "https://api.aniskip.com/" : savedAniSkipInstance
-        let endpoint = "v1/skip-times/\(malID)/\(episodeNumber)?types=op&types=ed"
-        
+        let endpoint = "v1/skip-times/\(malID)/\(episodeNumber)?types=op&types=ed&episodeLength=0" // Add episodeLength=0
+
         guard let url = URL(string: "\(baseURL)\(endpoint)") else {
-            print("Invalid URL")
+            print("Invalid AniSkip URL")
             completion([])
             return
         }
-        
+
         URLSession.shared.dataTask(with: url) { data, response, error in
-            if let error = error {
-                print("Network error: \(error)")
-                completion([])
-                return
-            }
-            
-            guard let data = data else {
-                print("No data received")
-                completion([])
-                return
-            }
-            
+            if let error = error { print("AniSkip Network error: \(error)"); completion([]); return }
+            guard let data = data else { print("No data from AniSkip"); completion([]); return }
+
             do {
-                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let results = json["results"] as? [[String: Any]] {
-                    
-                    let skipTimes = results.compactMap { result -> (String, TimeInterval, TimeInterval, String)? in
-                        guard let interval = result["interval"] as? [String: Double],
-                              let startTime = interval["start_time"],
-                              let endTime = interval["end_time"],
-                              let skipType = result["skip_type"] as? String,
-                              let skipId = result["skip_id"] as? String else {
-                                  return nil
-                              }
-                        return (skipType, startTime, endTime, skipId)
-                    }
-                    
-                    completion(skipTimes)
+                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    // Check for "found" key first
+                     if let found = json["found"] as? Bool, !found {
+                          print("No skip times found for MAL ID \(malID), Episode \(episodeNumber)")
+                          completion([])
+                          return
+                      }
+
+                     // Proceed if "found" is true or not present (older API versions?)
+                      if let results = json["results"] as? [[String: Any]] {
+                         let skipTimes = results.compactMap { result -> (type: String, start: TimeInterval, end: TimeInterval, id: String)? in
+                             guard let interval = result["interval"] as? [String: Double],
+                                   let startTime = interval["start_time"],
+                                   let endTime = interval["end_time"],
+                                   let skipType = result["skip_type"] as? String,
+                                   let skipId = result["skip_id"] as? String else { // Extract skip_id
+                                       return nil
+                                   }
+                             return (type: skipType, start: startTime, end: endTime, id: skipId) // Include id
+                         }
+                         completion(skipTimes)
+                      } else {
+                           print("Invalid JSON format from AniSkip (no 'results')")
+                           completion([])
+                       }
                 } else {
-                    print("Invalid JSON format")
-                    completion([])
-                }
+                     print("Invalid JSON format from AniSkip (top level)")
+                     completion([])
+                 }
             } catch {
-                print("Error parsing JSON: \(error)")
+                print("Error parsing AniSkip JSON: \(error)")
                 completion([])
             }
         }.resume()
     }
-    
+
+
     private func updateSkipButtons() {
-        for button in skipButtons {
-            button.removeFromSuperview()
-        }
-        skipButtons.removeAll()
-        
+        // Remove existing buttons and interval views first
+         removeSkipButtonsAndIntervals()
+
+        guard let duration = player?.currentItem?.duration.seconds, duration > 0 else { return }
+
         for (index, interval) in skipIntervals.enumerated() {
+            // --- Create Skip Button ---
             let button = UIButton(type: .system)
-            
-            let title = interval.0 == "op" ? "SKIP"  : "SKIP"
-            
+            let title = interval.type == "op" ? " Skip Intro" : " Skip Outro" // Add space for icon
             let icon = UIImage(systemName: "forward.fill")
+
             button.setImage(icon, for: .normal)
-            button.tintColor = .black
-            
             button.setTitle(title, for: .normal)
-            button.backgroundColor = UIColor.white
-            button.setTitleColor(.black, for: .normal)
-            button.layer.cornerRadius = 16
+            button.tintColor = .black // Icon color
+            button.setTitleColor(.black, for: .normal) // Text color
+            button.backgroundColor = UIColor.white.withAlphaComponent(0.9) // Slightly transparent white
+            button.layer.cornerRadius = 18 // More rounded
             button.layer.masksToBounds = true
-            button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-            
-            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -5, bottom: 0, right: 5)
-            button.titleEdgeInsets = UIEdgeInsets(top: 0, left: 5, bottom: 0, right: -5)
-            
-            button.contentHorizontalAlignment = .center
-            
-            button.tag = index
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium) // Adjusted font
+            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -5, bottom: 0, right: 5) // Adjust icon position
+            button.titleEdgeInsets = UIEdgeInsets(top: 0, left: 5, bottom: 0, right: -5) // Adjust text position
+            button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 15, bottom: 5, right: 15) // Add padding
+            button.sizeToFit() // Adjust size to content
+
+            button.tag = index // Store index to identify which interval to skip
             button.addTarget(self, action: #selector(skipButtonTapped(_:)), for: .touchUpInside)
-            button.alpha = 0
-            
-            addSubview(button)
+            button.alpha = 0 // Initially hidden
+            button.isHidden = true // Start hidden
+
+            controlsContainerView.addSubview(button) // Add to controls container
             skipButtons.append(button)
-            
             button.translatesAutoresizingMaskIntoConstraints = false
-            let bottomConstraint = button.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: isControlsVisible ? -5 : 35)
-            skipButtonsBottomConstraint = bottomConstraint
-            NSLayoutConstraint.activate([
-                button.trailingAnchor.constraint(equalTo: settingsButton.trailingAnchor),
-                bottomConstraint,
-                button.widthAnchor.constraint(equalToConstant: 90),
-                button.heightAnchor.constraint(equalToConstant: 35)
-            ])
+
+             // --- Position Skip Button ---
+             NSLayoutConstraint.activate([
+                  button.trailingAnchor.constraint(equalTo: settingsButton.trailingAnchor), // Align with settings button
+                  button.bottomAnchor.constraint(equalTo: progressBarContainer.topAnchor, constant: -10) // Position above progress bar
+              ])
+
+
+             // --- Create Skip Interval View on Progress Bar ---
+              let startPercentage = CGFloat(interval.start / duration)
+              let endPercentage = CGFloat(interval.end / duration)
+              guard startPercentage < 1.0, endPercentage > startPercentage else { continue } // Ensure valid range
+
+              let skipView = UIView()
+               skipView.backgroundColor = interval.type == "op" ? .systemOrange.withAlphaComponent(0.6) : .systemPurple.withAlphaComponent(0.6) // Different colors
+               skipView.layer.cornerRadius = playerProgress.frame.height / 2 // Rounded ends
+               skipView.layer.masksToBounds = true
+               skipView.isUserInteractionEnabled = false // Don't interfere with seeking
+
+               playerProgress.addSubview(skipView) // Add directly to progress view
+               skipIntervalViews.append(skipView)
+               skipView.translatesAutoresizingMaskIntoConstraints = false
+
+               let leadingConstraint = skipView.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor, constant: playerProgress.bounds.width * startPercentage)
+               let widthConstraint = skipView.widthAnchor.constraint(equalToConstant: max(1, playerProgress.bounds.width * (endPercentage - startPercentage))) // Ensure minimum width
+
+               NSLayoutConstraint.activate([
+                   leadingConstraint,
+                   widthConstraint,
+                   skipView.topAnchor.constraint(equalTo: playerProgress.topAnchor),
+                   skipView.bottomAnchor.constraint(equalTo: playerProgress.bottomAnchor)
+               ])
         }
     }
-    
+
+    private func removeSkipButtonsAndIntervals() {
+         for button in skipButtons { button.removeFromSuperview() }
+         skipButtons.removeAll()
+         for view in skipIntervalViews { view.removeFromSuperview() }
+         skipIntervalViews.removeAll()
+     }
+
+
+     private func updateProgressBarWithSkipIntervals() {
+          // This function now only needs to update the *positions* of existing skip interval views
+          // as the progress bar's layout changes (e.g., on rotation).
+          guard let duration = player?.currentItem?.duration.seconds, duration > 0 else { return }
+
+          for (index, view) in skipIntervalViews.enumerated() {
+              guard index < skipIntervals.count else { continue } // Safety check
+              let interval = skipIntervals[index]
+              let startPercentage = CGFloat(interval.start / duration)
+              let endPercentage = CGFloat(interval.end / duration)
+
+               // Update constraints
+               if let leadingConstraint = view.constraints.first(where: { $0.firstAttribute == .leading }) {
+                    leadingConstraint.constant = playerProgress.bounds.width * startPercentage
+                }
+                if let widthConstraint = view.constraints.first(where: { $0.firstAttribute == .width }) {
+                     widthConstraint.constant = max(1, playerProgress.bounds.width * (endPercentage - startPercentage))
+                 }
+          }
+          // Trigger layout update if needed, though usually happens automatically
+           // playerProgress.layoutIfNeeded()
+      }
+
+
+    private func setupSkipButtonUpdates() {
+        // Use the existing periodic time observer to update visibility
+        // No need for a separate timer
+    }
+
     @objc private func updateSkipButtonsVisibility() {
         guard let currentTime = player?.currentTime().seconds else { return }
-        
+
         for (index, interval) in skipIntervals.enumerated() {
+            guard index < skipButtons.count else { continue } // Safety check
             let button = skipButtons[index]
-            let isWithinInterval = currentTime >= interval.1 && currentTime <= interval.2
-            
-            UIView.animate(withDuration: 0.3) {
-                button.alpha = isWithinInterval ? 1 : 0
-            }
-            
-            if isWithinInterval {
-                let shouldAutoSkip: Bool
-                var hasSkipped: Bool
-                
-                if interval.0 == "op" {
-                    shouldAutoSkip = UserDefaults.standard.bool(forKey: "autoSkipIntro")
-                    hasSkipped = hasSkippedIntro
-                } else {
-                    shouldAutoSkip = UserDefaults.standard.bool(forKey: "autoSkipOutro")
-                    hasSkipped = hasSkippedOutro
-                }
-                
-                if shouldAutoSkip && !hasSkipped {
-                    
-                    player?.seek(to: CMTime(seconds: interval.2, preferredTimescale: 1))
-                    if interval.0 == "op" {
-                        hasSkippedIntro = true
-                    } else {
-                        hasSkippedOutro = true
-                    }
-                    UIView.animate(withDuration: 0.3) {
-                        button.alpha = 0
-                    }
-                }
-            }
+            let isWithinInterval = currentTime >= interval.start && currentTime < interval.end // Show button *within* the interval
+
+            let shouldShow = isWithinInterval && isControlsVisible // Only show if controls are visible AND within time
+
+            if button.isHidden == !shouldShow { // Only animate if state changes
+                UIView.animate(withDuration: 0.3) {
+                     button.alpha = shouldShow ? 1 : 0
+                     button.isHidden = !shouldShow
+                 }
+             }
+
+             // Auto-skip logic
+             if isWithinInterval {
+                 let autoSkipEnabled: Bool
+                 let hasSkippedFlag: Bool
+
+                 if interval.type == "op" {
+                     autoSkipEnabled = UserDefaults.standard.bool(forKey: "autoSkipIntro")
+                     hasSkippedFlag = hasSkippedIntro
+                 } else { // "ed"
+                     autoSkipEnabled = UserDefaults.standard.bool(forKey: "autoSkipOutro")
+                     hasSkippedFlag = hasSkippedOutro
+                 }
+
+                 if autoSkipEnabled && !hasSkippedFlag {
+                      print("Auto-skipping \(interval.type)")
+                      seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0)) // Seek to end of interval
+
+                      // Update the corresponding flag
+                      if interval.type == "op" { hasSkippedIntro = true }
+                      else { hasSkippedOutro = true }
+
+                      // Hide the button immediately after auto-skipping
+                       UIView.animate(withDuration: 0.1) {
+                           button.alpha = 0
+                           button.isHidden = true
+                       }
+                  }
+             }
         }
     }
-    
+
+
     func resetSkipFlags() {
         hasSkippedIntro = false
         hasSkippedOutro = false
+         hasVotedForSkipTimes = false
     }
-    
-    private func setupSkipButtonUpdates() {
-        let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
-            self?.updateSkipButtonsVisibility()
-        }
-    }
-    
+
     @objc private func skipButtonTapped(_ sender: UIButton) {
+        guard sender.tag < skipIntervals.count else { return }
         let interval = skipIntervals[sender.tag]
-        player?.seek(to: CMTime(seconds: interval.2, preferredTimescale: 1))
-        autoSkipTimer?.invalidate()
+        seek(to: interval.end / (player?.currentItem?.duration.seconds ?? 1.0)) // Seek to end time
+
+         // Manually hide the button after tapping
+         UIView.animate(withDuration: 0.2) {
+             sender.alpha = 0
+         } completion: { _ in
+              sender.isHidden = true
+          }
+
+         // Mark as skipped to prevent auto-skip if it hasn't happened yet
+         if interval.type == "op" { hasSkippedIntro = true }
+         else { hasSkippedOutro = true }
+
+        resetHideControlsTimer() // Keep controls visible
     }
-    
-    private func updateProgressBarWithSkipIntervals() {
-        removeSkipIntervalViews()
-        
-        guard let duration = player?.currentItem?.duration.seconds, duration > 0 else { return }
-        
-        for interval in skipIntervals {
-            let startPercentage = CGFloat(interval.1 / duration)
-            let endPercentage = CGFloat(interval.2 / duration)
-            
-            let skipView = UIView()
-            skipView.backgroundColor = .systemTeal
-            skipView.alpha = 0.5
-            
-            playerProgress.addSubview(skipView)
-            skipIntervalViews.append(skipView)
-            
-            skipView.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                skipView.leadingAnchor.constraint(equalTo: playerProgress.leadingAnchor, constant: playerProgress.bounds.width * startPercentage),
-                skipView.widthAnchor.constraint(equalToConstant: playerProgress.bounds.width * (endPercentage - startPercentage)),
-                skipView.topAnchor.constraint(equalTo: playerProgress.topAnchor),
-                skipView.bottomAnchor.constraint(equalTo: playerProgress.bottomAnchor)
-            ])
-        }
-    }
-    
-    private func removeSkipIntervalViews() {
-        for view in skipIntervalViews {
-            view.removeFromSuperview()
-        }
-        skipIntervalViews.removeAll()
-    }
-    
+
+
     private func showSkipVoteAlert() {
-        guard let viewController = self.findViewController() else { return }
-        
-        let alert = UIAlertController(title: "Rate Skip Timestamps", message: "Were the skip timestamps accurate?", preferredStyle: .alert)
-        
-        alert.addAction(UIAlertAction(title: "Upvote - Good skips", style: .default) { [weak self] _ in
-            self?.voteForSkipTimes(voteType: "upvote")
-        })
-        
-        alert.addAction(UIAlertAction(title: "Downvote - Bad skips", style: .default) { [weak self] _ in
-            self?.voteForSkipTimes(voteType: "downvote")
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .destructive))
-        
-        viewController.present(alert, animated: true)
-    }
-    
-    private func voteForSkipTimes(voteType: String) {
-        for interval in skipIntervals {
-            let skipId = interval.3
-            sendVote(skipId: skipId, voteType: voteType)
-        }
-        hasVotedForSkipTimes = true
-    }
-    
+         guard !skipIntervals.isEmpty, let viewController = self.findViewController() else { return }
+
+         let alert = UIAlertController(title: "Rate Skip Timestamps", message: "Were the skip timestamps accurate for this episode?", preferredStyle: .alert)
+
+         alert.addAction(UIAlertAction(title: "👍 Accurate", style: .default) { [weak self] _ in
+             self?.voteForSkipTimes(voteType: "upvote")
+         })
+
+         alert.addAction(UIAlertAction(title: "👎 Inaccurate", style: .default) { [weak self] _ in
+             self?.voteForSkipTimes(voteType: "downvote")
+         })
+
+         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+
+          // Configure for iPad
+          if UIDevice.current.userInterfaceIdiom == .pad {
+               if let popoverController = alert.popoverPresentationController {
+                   popoverController.sourceView = self // Anchor to the player view
+                   popoverController.sourceRect = CGRect(x: self.bounds.midX, y: self.bounds.midY, width: 0, height: 0) // Center
+                   popoverController.permittedArrowDirections = []
+               }
+           }
+
+         viewController.present(alert, animated: true)
+     }
+
+     private func voteForSkipTimes(voteType: String) {
+          print("Voting \(voteType) for \(skipIntervals.count) intervals")
+          for interval in skipIntervals {
+              sendVote(skipId: interval.id, voteType: voteType)
+          }
+          hasVotedForSkipTimes = true // Mark as voted for this session
+      }
+
+
     private func sendVote(skipId: String, voteType: String) {
-        let baseURL = "https://api.aniskip.com/"
-        let endpoint = "v1/skip-times/vote/\(skipId)"
-        
+        let baseURL = "https://api.aniskip.com/" // Use official API base
+        let endpoint = "v1/vote" // Use the correct vote endpoint
         guard let url = URL(string: "\(baseURL)\(endpoint)") else {
-            print("Invalid URL")
+            print("Invalid AniSkip vote URL")
             return
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue("application/json", forHTTPHeaderField: "accept")
-        
-        let payload = ["vote_type": voteType]
+
+        let payload: [String: String] = [
+            "skip_id": skipId,
+            "vote_type": voteType
+        ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        
+
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("Error sending vote: \(error.localizedDescription)")
-            } else if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 201 {
-                print("Vote sent successfully")
-            } else {
-                print("Unexpected response from server")
-            }
+                print("Error sending vote for \(skipId) (\(voteType)): \(error.localizedDescription)")
+            } else if let httpResponse = response as? HTTPURLResponse {
+                 if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 {
+                     print("Vote (\(voteType)) sent successfully for \(skipId)")
+                 } else {
+                      print("Unexpected response code (\(httpResponse.statusCode)) when voting for \(skipId)")
+                      // Optionally parse response body for more details if available
+                       if let responseData = data, let responseString = String(data: responseData, encoding: .utf8) {
+                            print("Server response: \(responseString)")
+                        }
+                   }
+             } else {
+                  print("Unexpected response or no response when voting for \(skipId)")
+              }
         }.resume()
     }
-}
 
-
-extension CustomVideoPlayerView {
-    struct SettingsKeys {
-        static let qualityIndex = "selectedQualityIndex"
-        static let subtitleFontSize = "subtitleFontSize"
-        static let subtitleColor = "subtitleColor"
-        static let subtitleBorderWidth = "subtitleBorderWidth"
-        static let subtitlesHidden = "subtitlesHidden"
-        static let aspectRatioFit = "aspectRatioFit"
-        static let fullBrightness = "fullBrightness"
-    }
-    
+    // MARK: - Settings Persistence
     func saveSettings() {
         let defaults = UserDefaults.standard
-        defaults.set(currentQualityIndex, forKey: SettingsKeys.qualityIndex)
-        
+        // Save subtitle settings
         defaults.set(subtitleFontSize, forKey: SettingsKeys.subtitleFontSize)
         if let colorData = try? NSKeyedArchiver.archivedData(withRootObject: subtitleColor, requiringSecureCoding: true) {
             defaults.set(colorData, forKey: SettingsKeys.subtitleColor)
         }
         defaults.set(subtitleBorderWidth, forKey: SettingsKeys.subtitleBorderWidth)
         defaults.set(areSubtitlesHidden, forKey: SettingsKeys.subtitlesHidden)
-        
+        // Save aspect ratio
         defaults.set(playerLayer?.videoGravity == .resizeAspect, forKey: SettingsKeys.aspectRatioFit)
-        
+        // Save brightness state
         defaults.set(isFullBrightness, forKey: SettingsKeys.fullBrightness)
+         // Save selected player speed
+          defaults.set(player?.rate ?? 1.0, forKey: "playerSpeed") // Save current rate
     }
-    
+
     func loadSettings() {
         let defaults = UserDefaults.standard
-        
-        if defaults.object(forKey: SettingsKeys.qualityIndex) != nil {
-            currentQualityIndex = defaults.integer(forKey: SettingsKeys.qualityIndex)
-        }
-        
-        if let fontSize = defaults.object(forKey: SettingsKeys.subtitleFontSize) as? CGFloat {
-            subtitleFontSize = fontSize
-        }
+        // Load subtitle settings
+        subtitleFontSize = defaults.object(forKey: SettingsKeys.subtitleFontSize) as? CGFloat ?? 16
         if let colorData = defaults.data(forKey: SettingsKeys.subtitleColor),
            let color = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: colorData) {
             subtitleColor = color
-        }
-        if let borderWidth = defaults.object(forKey: SettingsKeys.subtitleBorderWidth) as? CGFloat {
-            subtitleBorderWidth = borderWidth
-        }
+        } else { subtitleColor = .white }
+        subtitleBorderWidth = defaults.object(forKey: SettingsKeys.subtitleBorderWidth) as? CGFloat ?? 1
         areSubtitlesHidden = defaults.bool(forKey: SettingsKeys.subtitlesHidden)
-        
+        // Load aspect ratio
         let isFitMode = defaults.bool(forKey: SettingsKeys.aspectRatioFit)
         playerLayer?.videoGravity = isFitMode ? .resizeAspect : .resizeAspectFill
-        
+        // Load brightness state
         isFullBrightness = defaults.bool(forKey: SettingsKeys.fullBrightness)
+         // Load player speed
+          let savedSpeed = defaults.float(forKey: "playerSpeed")
+          player?.rate = savedSpeed > 0 ? savedSpeed : 1.0 // Apply saved speed, default to 1.0
+
+        updateSubtitleAppearance() // Apply loaded settings to UI
+        subtitlesLabel.isHidden = areSubtitlesHidden // Ensure hidden state is correct
+        // Apply brightness immediately if loaded state is true
+         if isFullBrightness {
+              originalBrightness = UIScreen.main.brightness // Store current *before* applying full
+              UIScreen.main.brightness = 1.0
+          }
+         updateSpeedMenu() // Update speed menu based on loaded rate
+         updateSettingsMenu() // Update settings menu state
+     }
+
+     // cleanTitle (from AnimeDetailsVC)
+      func cleanTitle(_ title: String) -> String {
+          let unwantedStrings = ["(ITA)", "(Dub)", "(Dub ID)", "(Dublado)"]
+          var cleanedTitle = title
+          for unwanted in unwantedStrings {
+              cleanedTitle = cleanedTitle.replacingOccurrences(of: unwanted, with: "")
+          }
+          cleanedTitle = cleanedTitle.replacingOccurrences(of: "\"", with: "")
+          return cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+
+       // showAlert (from AnimeDetailsVC)
+        func showAlert(title: String, message: String) {
+            let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
+
+            // Ensure presentation on the main thread and find top controller
+             DispatchQueue.main.async {
+                 var topController = UIApplication.shared.windows.filter {$0.isKeyWindow}.first?.rootViewController
+                 while let presentedViewController = topController?.presentedViewController {
+                     topController = presentedViewController
+                 }
+                 topController?.present(alertController, animated: true, completion: nil)
+             }
+        }
+}
+
+// Add Keys struct inside CustomVideoPlayerView
+extension CustomVideoPlayerView {
+    struct SettingsKeys {
+        static let subtitleFontSize = "customPlayerSubtitleFontSize"
+        static let subtitleColor = "customPlayerSubtitleColor"
+        static let subtitleBorderWidth = "customPlayerSubtitleBorderWidth"
+        static let subtitlesHidden = "customPlayerSubtitlesHidden"
+        static let aspectRatioFit = "customPlayerAspectRatioFit"
+        static let fullBrightness = "customPlayerFullBrightness"
     }
 }
