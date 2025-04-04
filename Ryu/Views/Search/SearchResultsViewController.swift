@@ -437,22 +437,33 @@ class SearchResultsViewController: UIViewController {
         noResultsLabel.isHidden = false
         changeSourceButton.isHidden = false
     }
-    
-    func parseHTML(html: String, for source: MediaSource) -> [(title: String, imageUrl: String, href: String)] {
-        switch source {
-        case .hianime, .anilibria:
-            return parseDocument(nil, jsonString: html, for: source)
-        default:
-            do {
-                let document = try SwiftSoup.parse(html)
-                return parseDocument(document, jsonString: nil, for: source)
-            } catch {
-                print("Error parsing HTML: \(error.localizedDescription)")
-                return []
-            }
+
+    private func parseHiAnime(_ jsonString: String) -> [(title: String, imageUrl: String, href: String)] {
+        do {
+            guard let data = jsonString.data(using: .utf8),
+                let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                let results = json["results"] as? [[String: Any]] else {
+            print("Invalid HiAnime JSON format")
+            return []
         }
+        
+        return results.compactMap { item -> (title: String, imageUrl: String, href: String)? in
+            guard let title = item["title"] as? String,
+                  let image = item["image"] as? String,
+                  let id = item["id"] as? String else {
+                return nil
+            }
+            
+            // Construct the href - adjust path as needed
+            let href = "/anime/\(id)"
+            return (title: title, imageUrl: image, href: href)
+        }
+    } catch {
+        print("Error parsing HiAnime JSON: \(error.localizedDescription)")
+        return []
     }
-    
+}
+
     private func parseDocument(_ document: Document?, jsonString: String?, for source: MediaSource) -> [(title: String, imageUrl: String, href: String)] {
         switch source {
         case .animeWorld:
