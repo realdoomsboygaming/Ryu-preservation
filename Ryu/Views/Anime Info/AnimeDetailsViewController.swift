@@ -3,13 +3,18 @@ import AVKit
 import SwiftSoup
 import GoogleCast
 import SafariServices
+import AVFoundation // Added for AVAudioSession
 
-class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientListener, AVPlayerViewControllerDelegate, SynopsisCellDelegate {
+// Add conformance to CustomPlayerViewDelegate
+class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientListener, AVPlayerViewControllerDelegate, SynopsisCellDelegate, CustomPlayerViewDelegate {
 
     var animeTitle: String?
     var imageUrl: String?
     var href: String?
-    var source: String?
+    // Removed private, kept optional as it's set in configure
+    var displayedDataSource: MediaSource?
+    var source: String? // Keep the original source string if needed elsewhere
+
 
     var episodes: [Episode] = []
     var synopsis: String = ""
@@ -40,19 +45,19 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     private var selectAllButton: UIBarButtonItem!
     private var filterButton: UIBarButtonItem!
 
-    // Store the source enum value
-    private var displayedDataSource: MediaSource?
-
     // MARK: - Initialization
     func configure(title: String, imageUrl: String, href: String, source: String) {
         self.animeTitle = title
         self.href = href
-        self.source = source
+        self.source = source // Keep original source string if needed
         self.displayedDataSource = MediaSource(rawValue: source)
 
-        if imageUrl == "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg" && (source == "AniWorld" || source == "TokyoInsider") {
+        // Corrected image fetching logic
+        if imageUrl == "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg" &&
+           (displayedDataSource == .aniworld || displayedDataSource == .tokyoinsider), // Use enum
+           let sourceRaw = displayedDataSource?.rawValue { // Use enum raw value
             self.imageUrl = imageUrl // Set temporarily
-            fetchImageUrl(source: source, href: href, fallback: imageUrl)
+            fetchImageUrl(source: sourceRaw, href: href, fallback: imageUrl)
         } else {
             self.imageUrl = imageUrl
         }
@@ -60,20 +65,22 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
     private func fetchImageUrl(source: String, href: String, fallback: String) {
         guard let url = URL(string: href.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? href) else {
-            DispatchQueue.main.async { self.imageUrl = fallback }
+            // Safely unwrap self and update imageUrl
+            DispatchQueue.main.async { [weak self] in self?.imageUrl = fallback }
             return
         }
 
         let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let self = self, let data = data, let html = String(data: data, encoding: .utf8) else {
-                DispatchQueue.main.async { self.imageUrl = fallback }
+                // Safely unwrap self and update imageUrl
+                DispatchQueue.main.async { [weak self] in self?.imageUrl = fallback }
                 return
             }
 
             do {
                 let doc = try SwiftSoup.parse(html)
                 var finalImageUrl: String?
-                switch source {
+                switch source { // Use the String source passed in
                 case "AniWorld":
                     if let coverBox = try doc.select("div.seriesCoverBox").first(),
                        let img = try coverBox.select("img").first(),
@@ -96,11 +103,13 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
                 }
             } catch {
                 print("Error extracting image URL: \(error)")
-                DispatchQueue.main.async { self.imageUrl = fallback }
+                // Safely unwrap self and update imageUrl
+                DispatchQueue.main.async { [weak self] in self?.imageUrl = fallback }
             }
         }
         task.resume()
     }
+
 
     // MARK: - Lifecycle Methods
     override func viewWillAppear(_ animated: Bool) {
@@ -133,8 +142,9 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
      private func setupCastButton() {
          let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
-         // Add cast button next to the select/edit button
+         // Keep existing right items if any
          var rightItems = navigationItem.rightBarButtonItems ?? []
+         // Add cast button to the right
          rightItems.append(UIBarButtonItem(customView: castButton))
          navigationItem.rightBarButtonItems = rightItems
      }
@@ -146,8 +156,15 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         selectAllButton = UIBarButtonItem(title: "Select All", style: .plain, target: self, action: #selector(selectAllEpisodes))
         filterButton = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal.decrease"), style: .plain, target: self, action: #selector(showFilterOptions))
 
-        // Initial state: show select button (Cast button is added in setupCastButton)
-        navigationItem.rightBarButtonItems = [selectButton] // Start with just select
+        // Initial state: ensure cast button remains if already added
+        var initialRightItems = navigationItem.rightBarButtonItems ?? []
+        if !initialRightItems.contains(where: { $0.customView is GCKUICastButton }) {
+             let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
+             initialRightItems.append(UIBarButtonItem(customView: castButton))
+         }
+         // Add select button
+         initialRightItems.append(selectButton)
+         navigationItem.rightBarButtonItems = initialRightItems
         navigationItem.leftBarButtonItem = nil
     }
 
@@ -177,14 +194,48 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          }
      }
 
+     // MARK: - Audio Session Interruption Handler
+     @objc private func handleInterruption(notification: Notification) {
+         guard let userInfo = notification.userInfo,
+               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                   return
+               }
+
+         switch type {
+         case .began:
+             // Interruption began, pause audio if playing
+             player?.pause()
+             print("Audio session interruption began.")
+         case .ended:
+             // Interruption ended. Resume playback?
+             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                 if options.contains(.shouldResume) {
+                     // Check if player was playing before interruption
+                     // This might require storing the playback state
+                     // For simplicity, let's try resuming if player exists
+                     player?.play()
+                     print("Audio session interruption ended. Resuming playback.")
+                 } else {
+                      print("Audio session interruption ended. Not resuming.")
+                  }
+             }
+         @unknown default:
+             break
+         }
+     }
+
+
     // MARK: - Data Fetching & Handling
     @objc private func handleRefresh() {
         fetchAnimeDetails()
     }
 
     private func fetchAnimeDetails() {
-         guard let href = href, let source = displayedDataSource else {
-             showAlert(title: "Error", message: "Missing anime information.")
+         // Use '_' for source if it's not needed after getting displayedDataSource
+         guard let href = href, let _ = displayedDataSource else {
+             self.showAlert(title: "Error", message: "Missing anime information.")
              refreshControl?.endRefreshing()
              return
          }
@@ -226,13 +277,19 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
      }
 
     private func sortEpisodes() {
-        episodes.sort { isReverseSorted ? $0.episodeNumber > $1.episodeNumber : $0.episodeNumber < $1.episodeNumber }
+        // Sort by extracted numeric part
+        episodes.sort {
+            let num1 = EpisodeNumberExtractor.extract(from: $0.number)
+            let num2 = EpisodeNumberExtractor.extract(from: $1.number)
+            return isReverseSorted ? num1 > num2 : num1 < num2
+        }
     }
 
 
     // MARK: - UI Actions & Updates
      @objc private func favoritesChanged() {
          checkFavoriteStatus()
+         // Only reload the header section where the favorite button is
          tableView.reloadSections(IndexSet(integer: 0), with: .none)
      }
 
@@ -241,7 +298,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         if newIsReverseSorted != isReverseSorted {
             isReverseSorted = newIsReverseSorted
             sortEpisodes()
-            tableView.reloadSections(IndexSet(integer: 2), with: .automatic)
+            tableView.reloadSections(IndexSet(integer: 2), with: .automatic) // Reload only episode section
         }
     }
 
@@ -256,19 +313,18 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
             } else {
                 FavoritesManager.shared.removeFavorite(anime)
                  if let title = animeTitle {
-                     if let customID = UserDefaults.standard.string(forKey: "customAniListID_\(title)"), let animeID = Int(customID) {
-                         AnimeEpisodeService.cancelNotifications(forAnimeID: animeID)
-                     } else {
-                          let cleanedTitle = cleanTitle(title)
-                          fetchAnimeID(title: cleanedTitle) { animeID in
-                              AnimeEpisodeService.cancelNotifications(forAnimeID: animeID)
-                          }
-                     }
+                     // Use existing fetchAnimeID which handles custom IDs first
+                     fetchAnimeID(title: title) { animeID in
+                          guard animeID != 0 else { return } // Avoid cancelling for ID 0
+                          AnimeEpisodeService.cancelNotifications(forAnimeID: animeID)
+                      }
                  }
             }
         }
+        // Reload only the header section
         tableView.reloadSections(IndexSet(integer: 0), with: .none)
     }
+
 
     private func createFavoriteAnime() -> FavoriteItem? {
         guard let title = animeTitle,
@@ -293,18 +349,16 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
          let mediaSource = displayedDataSource?.rawValue ?? "Unknown Source"
 
-         if let customID = UserDefaults.standard.string(forKey: "customAniListID_\(title)"), let animeID = Int(customID) {
-             AnimeEpisodeService.fetchEpisodesSchedule(animeID: animeID, animeName: title, mediaSource: mediaSource)
-             return
-         }
-
-         let cleanedTitle = cleanTitle(title)
-         fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
-              guard let self = self else { return }
+         fetchAnimeID(title: title) { [weak self] animeID in // fetchAnimeID already handles custom IDs
+              guard let self = self, animeID != 0 else {
+                  print("Could not get valid AniList ID for notifications.")
+                  return
+              }
               AnimeEpisodeService.fetchEpisodesSchedule(animeID: animeID, animeName: title, mediaSource: mediaSource)
               print("Scheduling notifications for fetched ID: \(animeID)")
           }
      }
+
 
     // MARK: - Multi-Select Actions
      @objc private func toggleSelectMode() {
@@ -313,14 +367,18 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
          if isSelectMode {
              let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
+             let castBarButtonItem = UIBarButtonItem(customView: castButton)
              navigationItem.leftBarButtonItems = [selectAllButton, filterButton]
-             navigationItem.rightBarButtonItems = [cancelButton, downloadButton, UIBarButtonItem(customView: castButton)]
+             navigationItem.rightBarButtonItems = [cancelButton, downloadButton, castBarButtonItem] // Keep cast button
              downloadButton.isEnabled = false
-             tableView.setEditing(false, animated: true)
+             tableView.setEditing(false, animated: true) // Ensure table editing mode is off
          } else {
-             setupCastButton() // Re-setup original right buttons
+             let castButton = GCKUICastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
+             let castBarButtonItem = UIBarButtonItem(customView: castButton)
+             navigationItem.rightBarButtonItems = [selectButton, castBarButtonItem] // Restore select and cast buttons
              navigationItem.leftBarButtonItems = nil
          }
+
 
          tableView.performBatchUpdates({
              let indexPaths = (0..<episodes.count).map { IndexPath(row: $0, section: 2) }
@@ -355,6 +413,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          for episode in episodes {
              let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(episode.href)")
              let totalTime = UserDefaults.standard.double(forKey: "totalTime_\(episode.href)")
+             // Consider watched if progress > 90%
              let progress = (totalTime > 0) ? (lastPlayedTime / totalTime) : 0
              if progress < 0.9 {
                  selectedEpisodes.insert(episode)
@@ -369,6 +428,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          for episode in episodes {
              let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(episode.href)")
              let totalTime = UserDefaults.standard.double(forKey: "totalTime_\(episode.href)")
+             // Consider watched if progress >= 90%
              let progress = (totalTime > 0) ? (lastPlayedTime / totalTime) : 0
              if progress >= 0.9 {
                  selectedEpisodes.insert(episode)
@@ -390,6 +450,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
                    let startText = alertController?.textFields?[0].text, let start = Int(startText),
                    let endText = alertController?.textFields?[1].text, let end = Int(endText),
                    start <= end else {
+                 // Use self.showAlert defined in the extension
                  self.showAlert(title: "Error", message: "Please enter a valid episode range.")
                  return
              }
@@ -442,27 +503,30 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         )
     }
 
+
     private func startBatchDownload() {
         let episodesToDownload = Array(selectedEpisodes).sorted { $0.episodeNumber < $1.episodeNumber }
         UserDefaults.standard.set(true, forKey: "isToDownload")
         processNextDownload(episodes: episodesToDownload)
-        toggleSelectMode()
+        toggleSelectMode() // Exit select mode after starting batch
     }
 
     private func processNextDownload(episodes: [Episode], index: Int = 0) {
          guard index < episodes.count else {
-             showAlert(title: "Downloads Queued", message: "All selected episodes have been queued for download.")
-             UserDefaults.standard.set(false, forKey: "isToDownload")
+             self.showAlert(title: "Downloads Queued", message: "All selected episodes have been queued for download.")
+             UserDefaults.standard.set(false, forKey: "isToDownload") // Reset flag after queueing
              return
          }
 
          let episode = episodes[index]
-         let dummyCell = EpisodeCell()
-         dummyCell.episodeNumber = episode.number
+         let dummyCell = EpisodeCell() // Create a dummy cell
+         dummyCell.episodeNumber = episode.number // Set the number for reference
 
-         episodeSelected(episode: episode, cell: dummyCell)
+         // Directly call checkUserDefault (which handles isToDownload flag internally)
+         checkUserDefault(url: episode.href, cell: dummyCell, fullURL: episode.href)
 
-         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+         // Wait a short interval before processing the next to avoid overwhelming the system
+         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in // Increased delay slightly
              self?.processNextDownload(episodes: episodes, index: index + 1)
          }
      }
@@ -497,9 +561,12 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
         if let popoverController = alertController.popoverPresentationController {
              if let headerCell = tableView.cellForRow(at: IndexPath(row: 0, section: 0)) as? AnimeHeaderCell {
-                  popoverController.sourceView = headerCell.optionsButton // Anchor to the options button
-                  popoverController.sourceRect = headerCell.optionsButton.bounds
-                  popoverController.permittedArrowDirections = .up
+                  // Safely access optionsButton from headerCell if possible
+                  // Note: optionsButton is private in the cell, may need adjustment
+                  // For now, fallback to view center
+                   popoverController.sourceView = self.view // Fallback
+                   popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.minY + 50, width: 0, height: 0)
+                   popoverController.permittedArrowDirections = [.up, .down]
               } else {
                   popoverController.sourceView = self.view
                   popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.minY + 50, width: 0, height: 0)
@@ -510,6 +577,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         present(alertController, animated: true)
     }
 
+
     private func fetchAnimeIDAndMappings() {
         guard let title = self.animeTitle else {
             self.showAlert(title: "Error", message: "Anime title is not available.")
@@ -517,6 +585,10 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         }
         let cleanedTitle = cleanTitle(title)
         fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
+             guard animeID != 0 else {
+                 self?.showAlert(title: "Error", message: "Could not find AniList ID for this anime.")
+                 return
+             }
              self?.fetchMappingsAndShowOptions(animeID: animeID)
          }
     }
@@ -656,7 +728,6 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
              }
          }
 
-
         let revertAction = UIAlertAction(title: "Clear Custom ID", style: .destructive) { [weak self] _ in
              UserDefaults.standard.removeObject(forKey: "customAniListID_\(currentTitle)")
              self?.showAlert(title: "Reverted", message: "The custom AniList ID has been cleared.")
@@ -683,30 +754,30 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         case .animeWorld: baseUrl = "https://animeworld.so"
         case .gogoanime: baseUrl = "https://anitaku.bz"
         case .animeheaven: baseUrl = "https://animeheaven.me/"
-        case .anilist: baseUrl = "https://hianime.to/watch/" // Base watch URL
+        case .anilist: baseUrl = "https://hianime.to" // Use base site URL
         case .animefire: baseUrl = "https://animefire.plus"
         case .anilibria:
              baseUrl = "https://anilibria.tv/release/"
-              if let _ = Int(path) {
-                   let urlString = "\(baseUrl)\(path).html"
+              if let idInt = Int(path) { // If href is just the ID
+                   let urlString = "\(baseUrl)\(idInt).html"
                    if let url = URL(string: urlString) { presentSafari(url: url); return }
-              } else if let url = URL(string: path), path.contains("anilibria") {
+              } else if let url = URL(string: path), path.contains("anilibria") { // If href is already a full URL
                    presentSafari(url: url); return
               }
               showAlert(title: "Error", message: "Cannot determine Anilibria web URL.")
               return
-         // Assume other sources include base URL in href or don't need one
          case .kuramanime, .anime3rb, .animesrbija, .aniworld, .tokyoinsider, .anivibe, .animeunity, .animeflv, .animebalkan, .anibunker:
-            baseUrl = ""
+            baseUrl = "" // Assume href is already absolute for these
          }
 
         let fullUrlString: String
-        if !baseUrl.isEmpty && !path.hasPrefix("http") {
+        if source == .anilist { // Special handling for anilist href (which is just the slug/ID)
+            fullUrlString = "\(baseUrl)/\(path)"
+        } else if !baseUrl.isEmpty && !path.hasPrefix("http") {
             fullUrlString = baseUrl + (path.hasPrefix("/") ? path : "/\(path)")
         } else {
             fullUrlString = path
         }
-
 
         guard let url = URL(string: fullUrlString) else {
             showAlert(title: "Error", message: "Invalid URL: \(fullUrlString)")
@@ -715,22 +786,15 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         presentSafari(url: url)
     }
 
+
      private func presentSafari(url: URL) {
          let safariViewController = SFSafariViewController(url: url)
          present(safariViewController, animated: true)
      }
 
-
     private func fetchAndNavigateToAnime(title: String) {
-        if let animeTitle = self.animeTitle,
-           let customIDString = UserDefaults.standard.string(forKey: "customAniListID_\(animeTitle)"),
-           let customID = Int(customIDString) {
-            navigateToAnimeDetail(for: customID)
-            return
-        }
-
-         fetchAnimeID(title: title) { [weak self] animeID in
-             // Check if ID is valid (not 0 which indicates failure)
+        // Use existing fetchAnimeID which handles custom IDs
+        fetchAnimeID(title: title) { [weak self] animeID in
               guard animeID != 0 else {
                   self?.showAlert(title: "Not Found", message: "Could not find this anime on AniList.")
                   return
@@ -750,18 +814,9 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          }
      }
 
-    func showAlert(title: String, message: String) {
-        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
-        DispatchQueue.main.async {
-            var topController = UIApplication.shared.windows.filter {$0.isKeyWindow}.first?.rootViewController
-            while let presentedViewController = topController?.presentedViewController {
-                topController = presentedViewController
-            }
-            topController?.present(alertController, animated: true, completion: nil)
-        }
-    }
-
+    // This showAlert should be the primary one if the extension one is removed
+    // Or, keep the extension one and remove this one. Decide which pattern to follow.
+    // func showAlert(title: String, message: String) { ... } // Removed duplicate
 
     // MARK: - TableView DataSource & Delegate
     override func numberOfSections(in tableView: UITableView) -> Int { 3 }
@@ -810,10 +865,14 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
             } else {
                 if let cell = tableView.cellForRow(at: indexPath) as? EpisodeCell {
                     episodeSelected(episode: episode, cell: cell)
+                } else {
+                    // Handle case where cell is not visible but selection occurred (less common for taps)
+                    episodeSelected(episode: episode, cell: EpisodeCell()) // Pass dummy cell
                 }
             }
         }
     }
+
     override func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) { cell.backgroundColor = .systemBackground }
     override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat { UITableView.automaticDimension }
     override func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
@@ -829,6 +888,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
      func episodeSelected(episode: Episode, cell: EpisodeCell) {
          showLoadingBanner()
          self.currentEpisodeIndex = episodes.firstIndex(where: { $0.href == episode.href }) ?? -1
+         hasSentUpdate = false // Reset update flag for the new episode
 
          guard let selectedSource = displayedDataSource else {
              hideLoadingBannerAndShowAlert(title: "Error", message: "Source information missing.")
@@ -844,7 +904,10 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     // MARK: - Loading Banner
     func showLoadingBanner() {
         #if os(iOS)
-         guard presentedViewController as? UIAlertController == nil else { return }
+         guard presentedViewController as? UIAlertController == nil else {
+             print("Loading banner already presented or another alert is active.")
+             return
+         }
         let alert = UIAlertController(title: nil, message: "Extracting Video", preferredStyle: .alert)
         alert.view.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         alert.view.layer.cornerRadius = 15
@@ -853,17 +916,24 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         loadingIndicator.style = .medium
         loadingIndicator.startAnimating();
         alert.view.addSubview(loadingIndicator)
-        loadingIndicator.center = CGPoint(x: alert.view.bounds.midX, y: alert.view.bounds.midY - 10)
+        // Center indicator correctly using Auto Layout after adding to subview
+         loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+         NSLayoutConstraint.activate([
+             loadingIndicator.centerXAnchor.constraint(equalTo: alert.view.centerXAnchor),
+             loadingIndicator.centerYAnchor.constraint(equalTo: alert.view.centerYAnchor, constant: -10) // Adjust vertical position if needed
+         ])
+
         present(alert, animated: true, completion: nil)
         #endif
     }
 
+
     // MARK: - Player Handling
     func checkUserDefault(url: String, cell: EpisodeCell, fullURL: String) {
         if UserDefaults.standard.bool(forKey: "isToDownload") {
-            playEpisode(url: url, cell: cell, fullURL: fullURL)
+            playEpisode(url: url, cell: cell, fullURL: fullURL) // Will trigger download logic inside
         } else if UserDefaults.standard.bool(forKey: "browserPlayer") {
-            openInWeb(fullURL: url)
+            openInWeb(fullURL: fullURL) // Use the fullURL (original href) for web opening
         } else {
             playEpisode(url: url, cell: cell, fullURL: fullURL)
         }
@@ -879,16 +949,20 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
 
             switch selectedMediaSource {
             case "AniList": // Renamed
-                if let extractedID = self.extractAniListEpisodeId(from: fullURL) {
-                    let hiAnimeWatchURL = "https://hianime.to/watch/\(extractedID)"
-                    self.openSafariViewController(with: hiAnimeWatchURL)
+                // The href for AniList episode is the source fetch URL, need to reconstruct the watch URL
+                // Example source fetch URL: https://.../episode-srcs?id=steinsgate-3?ep=13499...
+                // We need to extract "steinsgate-3?ep=13499"
+                if let idPart = fullURL.components(separatedBy: "?id=").last {
+                    let watchURLString = "https://hianime.to/watch/\(idPart)"
+                    self.openSafariViewController(with: watchURLString)
                 } else {
-                    self.showAlert(title: "Error", message: "Unable to extract episode ID for web view.")
+                    self.showAlert(title: "Error", message: "Unable to construct web URL for AniList.")
                 }
+
             case "Anilibria":
                 self.showAlert(title: "Unsupported Function", message: "Anilibria doesn't support playing in web directly from episode links.")
             default:
-                self.openSafariViewController(with: fullURL)
+                self.openSafariViewController(with: fullURL) // For most sources, the episode href is the web URL
             }
         }
     }
@@ -908,16 +982,17 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
     }
 
     func playEpisode(url: String, cell: EpisodeCell, fullURL: String) {
-         hasSentUpdate = false
+         hasSentUpdate = false // Reset update flag
 
          guard let selectedSource = displayedDataSource else {
              hideLoadingBannerAndShowAlert(title: "Error", message: "Source information missing.")
              return
          }
 
-         if selectedSource == .anilist { // Renamed from HiAnime
-             handleHiAnimeSource(url: url, cell: cell, fullURL: fullURL) // Use the existing logic (needs rename later if API changes)
+         if selectedSource == .anilist { // Use enum for comparison
+             handleAniListSource(url: url, cell: cell, fullURL: fullURL) // Use specific handler
          } else if url.hasSuffix(".mp4") || url.hasSuffix(".m3u8") || url.contains("animeheaven.me/video.mp4") || selectedSource == .anilibria {
+              // Direct play for known formats or Anilibria (which provides direct links)
              hideLoadingBanner { [weak self] in
                  guard let videoURL = URL(string: url) else {
                       self?.showAlert(title: "Error", message: "Invalid video URL.")
@@ -927,17 +1002,17 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
              }
           }
           else {
+             // Handle sources requiring web scraping or player-specific logic
              handleSources(url: url, cell: cell, fullURL: fullURL)
          }
      }
-
 
     func hideLoadingBanner(completion: (() -> Void)? = nil) {
         DispatchQueue.main.async {
             if let alert = self.presentedViewController as? UIAlertController, alert.message == "Extracting Video" {
                 alert.dismiss(animated: true) { completion?() }
             } else {
-                completion?()
+                completion?() // Call completion even if banner wasn't shown
             }
         }
     }
@@ -984,417 +1059,6 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         }
     }
 
-    private func handleHiAnimeSource(url: String, cell: EpisodeCell, fullURL: String) { // Keep internal name for now
-         guard let episodeId = extractAniListEpisodeId(from: url) else { // Use renamed function
-             print("Could not extract episodeId from URL")
-             hideLoadingBannerAndShowAlert(title: "Error", message: "Could not extract episodeId from URL")
-             return
-         }
-
-         fetchAniListEpisodeOptions(episodeId: episodeId) { [weak self] options in // Use renamed function
-             guard let self = self else { return }
-
-             if options.isEmpty {
-                 print("No options available for this episode")
-                 self.hideLoadingBannerAndShowAlert(title: "Error", message: "No options available for this episode")
-                 return
-             }
-
-             let preferredAudio = UserDefaults.standard.string(forKey: "anilistAudioPref") ?? "" // Updated key
-             let preferredServer = UserDefaults.standard.string(forKey: "anilistServerPref") ?? "" // Updated key
-
-             self.selectAudioCategory(options: options, preferredAudio: preferredAudio) { category in
-                 guard let servers = options[category], !servers.isEmpty else {
-                     print("No servers available for selected category: \(category)")
-                     self.hideLoadingBannerAndShowAlert(title: "Error", message: "No servers available for '\(category.capitalized)' audio.")
-                     return
-                 }
-
-                 self.selectServer(servers: servers, preferredServer: preferredServer) { server in
-                     let urls = ["https://aniwatch-api-gp1w.onrender.com/anime/episode-srcs?id="] // Use provided logic's URL
-                     let randomURL = urls.randomElement()!
-                     let finalURL = "\(randomURL)\(episodeId)&category=\(category)&server=\(server)"
-
-                     self.fetchAniListData(from: finalURL) { [weak self] sourceURL, captionURLs in // Use renamed function
-                         guard let self = self else { return }
-
-                         self.hideLoadingBanner {
-                             DispatchQueue.main.async {
-                                 guard let sourceURL = sourceURL else {
-                                     print("Error extracting source URL")
-                                     self.showAlert(title: "Error", message: "Error extracting source URL")
-                                     return
-                                 }
-
-                                 self.selectSubtitles(captionURLs: captionURLs) { selectedSubtitleURL in
-                                     let subtitleURL = selectedSubtitleURL ?? URL(string: "https://nosubtitlesfor.you")!
-                                     self.openHiAnimeExperimental(url: sourceURL, subURL: subtitleURL, cell: cell, fullURL: fullURL)
-                                 }
-                             }
-                         }
-                     }
-                 }
-             }
-         }
-     }
-
-
-    func hideLoadingBannerAndShowAlert(title: String, message: String) {
-        #if os(iOS)
-        hideLoadingBanner { [weak self] in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.showAlert(title: title, message: message)
-            }
-        }
-        #endif
-    }
-
-    private func handleSources(url: String, cell: EpisodeCell, fullURL: String) {
-         guard let requestURL = encodedURL(from: url) else {
-             DispatchQueue.main.async {
-                 self.hideLoadingBanner()
-                 self.showAlert(title: "Error", message: "Invalid URL: \(url)")
-             }
-             return
-         }
-
-         URLSession.shared.dataTask(with: requestURL) { [weak self] (data, response, error) in
-             guard let self = self else { return }
-
-             DispatchQueue.main.async {
-                 if let error = error {
-                     self.hideLoadingBanner()
-                     self.showAlert(title: "Error", message: "Error fetching video data: \(error.localizedDescription)")
-                     return
-                 }
-
-                 guard let data = data, let htmlString = String(data: data, encoding: .utf8) else {
-                     self.hideLoadingBanner()
-                     self.showAlert(title: "Error", message: "Error parsing video data")
-                     return
-                 }
-
-                 guard let selectedSource = self.displayedDataSource else {
-                      self.hideLoadingBanner()
-                      self.showAlert(title: "Error", message: "Source information missing.")
-                      return
-                  }
-
-                 let gogoFetcher = UserDefaults.standard.string(forKey: "gogoFetcher") ?? "Default"
-                 var srcURL: URL?
-
-                 switch selectedSource {
-                 case .gogoanime:
-                     if gogoFetcher == "Default" { srcURL = self.extractIframeSourceURL(from: htmlString) }
-                     else if gogoFetcher == "Secondary" { srcURL = self.extractDownloadLink(from: htmlString) }
-                 case .animefire: srcURL = self.extractDataVideoSrcURL(from: htmlString)
-                 case .animeWorld, .animeheaven, .animebalkan: srcURL = self.extractVideoSourceURL(from: htmlString)
-                 case .kuramanime: srcURL = URL(string: fullURL) // Pass original for its player
-                 case .animesrbija: srcURL = self.extractAsgoldURL(from: htmlString)
-                 case .anime3rb:
-                      self.anime3rbGetter(from: htmlString) { finalUrl in
-                           if let url = finalUrl { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
-                           else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for Anime3rb") }
-                      }
-                      return
-                  case .anivibe: srcURL = self.extractAniVibeURL(from: htmlString)
-                  case .anibunker: srcURL = self.extractAniBunker(from: htmlString)
-                  case .tokyoinsider:
-                       self.extractTokyoVideo(from: htmlString) { selectedURL in
-                            DispatchQueue.main.async {
-                                self.hideLoadingBanner { self.playVideo(sourceURL: selectedURL, cell: cell, fullURL: fullURL) }
-                            }
-                        }
-                        return
-                   case .aniworld:
-                        self.extractVidozaVideoURL(from: htmlString) { videoURL in
-                            guard let finalURL = videoURL else {
-                                self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AniWorld")
-                                return
-                            }
-                            DispatchQueue.main.async {
-                                self.hideLoadingBanner { self.playVideo(sourceURL: finalURL, cell: cell, fullURL: fullURL) }
-                            }
-                        }
-                        return
-                   case .animeunity:
-                        self.extractEmbedUrl(from: htmlString) { finalUrl in
-                            if let url = finalUrl { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
-                            else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AnimeUnity") }
-                        }
-                        return
-                   case .animeflv:
-                        self.extractStreamtapeQueryParameters(from: htmlString) { videoURL in
-                            if let url = videoURL { self.hideLoadingBanner { self.playVideo(sourceURL: url, cell: cell, fullURL: fullURL) } }
-                            else { self.hideLoadingBannerAndShowAlert(title: "Error", message: "Error extracting source URL for AnimeFLV") }
-                        }
-                        return
-                    // Anilist and Anilibria handled earlier
-                    case .anilist, .anilibria:
-                        print("Should not reach handleSources for Anilist/Anilibria")
-                        self.hideLoadingBannerAndShowAlert(title: "Internal Error", message: "Source handling error.")
-                        return
-                   }
-
-                 guard let finalSrcURL = srcURL else {
-                     self.hideLoadingBannerAndShowAlert(title: "Error", message: "The stream URL wasn't found.")
-                     return
-                 }
-
-                 self.hideLoadingBanner {
-                     DispatchQueue.main.async {
-                         switch selectedSource {
-                         case .gogoanime:
-                             let playerType = gogoFetcher == "Secondary" ? VideoPlayerType.standard : VideoPlayerType.playerGoGo2
-                             self.startStreamingButtonTapped(withURL: finalSrcURL.absoluteString, captionURL: "", playerType: playerType, cell: cell, fullURL: fullURL)
-                         case .animefire:
-                              self.fetchVideoDataAndChooseQuality(from: finalSrcURL.absoluteString) { selectedURL in
-                                   guard let selectedURL = selectedURL else {
-                                       self.showAlert(title: "Error", message: "Failed to fetch video data for AnimeFire")
-                                       return
-                                   }
-                                   self.playVideo(sourceURL: selectedURL, cell: cell, fullURL: fullURL)
-                               }
-                          case .kuramanime:
-                              self.startStreamingButtonTapped(withURL: finalSrcURL.absoluteString, captionURL: "", playerType: VideoPlayerType.playerKura, cell: cell, fullURL: fullURL)
-                         default:
-                              self.playVideo(sourceURL: finalSrcURL, cell: cell, fullURL: fullURL)
-                          }
-                     }
-                 }
-             }
-         }.resume()
-     }
-
-    // encodedURL remains the same
-    func encodedURL(from urlString: String) -> URL? {
-        let allowedCharacters = CharacterSet.urlQueryAllowed
-        guard let encodedString = urlString.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else { return nil }
-        return URL(string: encodedString)
-    }
-
-    // MARK: - Casting
-    private func proceedWithCasting(videoURL: URL) {
-        DispatchQueue.main.async {
-            let metadata = GCKMediaMetadata(metadataType: .movie)
-
-            if UserDefaults.standard.bool(forKey: "fullTitleCast") {
-                 metadata.setString(self.animeTitle ?? "Unknown Anime", forKey: kGCKMetadataKeyTitle)
-             } else {
-                 let episodeNumber = EpisodeNumberExtractor.extract(from: self.cell.episodeNumber)
-                 metadata.setString("Episode \(episodeNumber)", forKey: kGCKMetadataKeyTitle)
-             }
-
-            if UserDefaults.standard.bool(forKey: "animeImageCast"), let imageURL = URL(string: self.imageUrl ?? "") {
-                metadata.addImage(GCKImage(url: imageURL, width: 480, height: 720))
-            }
-
-            let builder = GCKMediaInformationBuilder(contentURL: videoURL)
-
-            let contentType: String
-            let urlString = videoURL.absoluteString.lowercased()
-            if urlString.contains(".m3u8") { contentType = "application/x-mpegurl" }
-            else if urlString.contains(".mp4") { contentType = "video/mp4" }
-            else { contentType = "video/mp4" } // Default
-            builder.contentType = contentType
-            builder.metadata = metadata
-
-            let streamTypeString = UserDefaults.standard.string(forKey: "castStreamingType") ?? "buffered"
-            builder.streamType = (streamTypeString == "live") ? .live : .buffered
-
-            let mediaInformation = builder.build()
-            let mediaLoadOptions = GCKMediaLoadOptions()
-            mediaLoadOptions.autoplay = true
-
-            let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(self.fullURL)")
-            mediaLoadOptions.playPosition = lastPlayedTime > 0 ? lastPlayedTime : 0
-
-            if let castSession = GCKCastContext.sharedInstance().sessionManager.currentCastSession,
-               let remoteMediaClient = castSession.remoteMediaClient {
-                remoteMediaClient.loadMedia(mediaInformation, with: mediaLoadOptions)
-                remoteMediaClient.add(self)
-            } else {
-                 print("Error: Failed to load media to Google Cast - No session")
-                 self.showAlert(title: "Cast Error", message: "No active Chromecast session found.")
-             }
-        }
-    }
-
-    func remoteMediaClient(_ client: GCKRemoteMediaClient, didUpdate mediaStatus: GCKMediaStatus?) {
-        if let mediaStatus = mediaStatus, mediaStatus.idleReason == .finished {
-            if UserDefaults.standard.bool(forKey: "AutoPlay") {
-                DispatchQueue.main.async { [weak self] in
-                    self?.playNextEpisode()
-                }
-            }
-        }
-    }
-
-    // MARK: - Playback & External Players
-    func playVideo(sourceURL: URL, cell: EpisodeCell, fullURL: String) {
-         hideLoadingBanner() // Ensure banner is hidden before playback decision
-         let selectedPlayer = UserDefaults.standard.string(forKey: "mediaPlayerSelected") ?? "Default"
-         let isToDownload = UserDefaults.standard.bool(forKey: "isToDownload")
-
-         if isToDownload {
-             handleDownload(sourceURL: sourceURL, fullURL: fullURL)
-         } else {
-              DispatchQueue.main.async { // Ensure player presentation is on main thread
-                  self.playVideoWithSelectedPlayer(player: selectedPlayer, sourceURL: sourceURL, cell: cell, fullURL: fullURL)
-              }
-          }
-     }
-
-
-    private func handleDownload(sourceURL: URL, fullURL: String) {
-        UserDefaults.standard.set(false, forKey: "isToDownload")
-
-        guard let episode = episodes.first(where: { $0.href == fullURL }) else {
-            print("Error: Could not find episode for URL \(fullURL) to download.")
-            showAlert(title: "Download Error", message: "Could not find episode details for download.")
-            return
-        }
-
-        let downloadManager = DownloadManager.shared
-        let title = "\(self.animeTitle ?? "Anime") - Ep. \(episode.number)"
-
-        // Optionally show a less intrusive confirmation or just start
-         self.showAlert(title: "Download Started", message: "'\(title)' download has begun.")
-
-        downloadManager.startDownload(url: sourceURL, title: title, progress: { progress in
-            // Update UI elsewhere if needed, e.g., a global download manager view
-        }) { [weak self] result in
-             DispatchQueue.main.async {
-                 self?.handleDownloadResult(result) // Handle completion (success/failure)
-             }
-         }
-    }
-
-
-    private func handleDownloadResult(_ result: Result<URL, Error>) {
-        switch result {
-        case .success(let url):
-            print("Download completed. File saved at: \(url)")
-            // Optionally show a success alert here if needed
-        case .failure(let error):
-            print("Download failed with error: \(error.localizedDescription)")
-            showAlert(title: "Download Failed", message: error.localizedDescription)
-        }
-    }
-
-    private func playVideoWithSelectedPlayer(player: String, sourceURL: URL, cell: EpisodeCell, fullURL: String) {
-         switch player {
-         case "Infuse", "VLC", "OutPlayer", "nPlayer":
-             openInExternalPlayer(player: player, url: sourceURL)
-         case "Custom":
-             let fileExtension = sourceURL.pathExtension.lowercased()
-             if ["mkv", "avi"].contains(fileExtension) {
-                  showAlert(title: "Unsupported Format", message: "The Custom Player does not support '\(fileExtension)' files. Please use an external player like VLC, Infuse, or Outplayer (setup in Settings).")
-                  return
-              }
-             let videoTitle = animeTitle ?? "Anime"
-             let imageURL = imageUrl ?? "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"
-             let viewController = CustomPlayerView(videoTitle: videoTitle, videoURL: sourceURL, cell: cell, fullURL: fullURL, image: imageURL)
-             viewController.modalPresentationStyle = .fullScreen
-             viewController.delegate = self
-             self.present(viewController, animated: true, completion: nil)
-         case "WebPlayer":
-              // Assuming WebPlayer is primarily for HiAnime/Anilist which provides caption URL
-              // For other sources, pass an empty caption URL or fetch if possible
-              let captionURLString = "" // Modify if captions are available for this source/URL
-             startStreamingButtonTapped(withURL: sourceURL.absoluteString, captionURL: captionURLString, playerType: VideoPlayerType.playerWeb, cell: cell, fullURL: fullURL)
-         default: // "Default" player
-             playVideoWithAVPlayer(sourceURL: sourceURL, cell: cell, fullURL: fullURL)
-         }
-     }
-
-    func openInExternalPlayer(player: String, url: URL) {
-        let schemeMap: [String: String] = [
-            "Infuse": "infuse://x-callback-url/play?url=", "VLC": "vlc://",
-            "OutPlayer": "outplayer://", "nPlayer": "nplayer-"
-        ]
-        guard let baseScheme = schemeMap[player] else {
-            showAlert(title: "Error", message: "Unsupported player selected.")
-            return
-        }
-
-        let finalURLString: String
-         if player == "nPlayer" {
-             let urlStringWithoutScheme = url.absoluteString.replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "")
-             finalURLString = baseScheme + urlStringWithoutScheme
-         } else if player == "VLC" {
-             guard let encodedURL = url.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) else {
-                  showAlert(title: "Error", message: "Could not encode URL for VLC.")
-                  return
-              }
-             finalURLString = baseScheme + encodedURL
-         } else {
-             finalURLString = baseScheme + url.absoluteString
-         }
-
-        guard let playerURL = URL(string: finalURLString) else {
-            showAlert(title: "Error", message: "Failed to create URL for \(player).")
-            return
-        }
-
-        if UIApplication.shared.canOpenURL(playerURL) {
-            UIApplication.shared.open(playerURL, options: [:]) { success in
-                 if !success { self.showAlert(title: "Error", message: "Could not open \(player).") }
-            }
-        } else {
-            showAlert(title: "\(player) Not Found", message: "The \(player) app is not installed.")
-        }
-    }
-
-    func openHiAnimeExperimental(url: URL, subURL: URL, cell: EpisodeCell, fullURL: String) { // Keep internal name
-        let videoTitle = animeTitle ?? "Anime"
-        let imageURL = imageUrl ?? "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"
-        let viewController = CustomPlayerView(videoTitle: videoTitle, videoURL: url, subURL: subURL, cell: cell, fullURL: fullURL, image: imageURL)
-        viewController.modalPresentationStyle = .fullScreen
-        viewController.delegate = self
-        self.present(viewController, animated: true, completion: nil)
-    }
-
-    private func playVideoWithAVPlayer(sourceURL: URL, cell: EpisodeCell, fullURL: String) {
-         let fileExtension = sourceURL.pathExtension.lowercased()
-         if ["mkv", "avi"].contains(fileExtension) {
-              showAlert(title: "Unsupported Format", message: "The default player cannot play '\(fileExtension)' files. Please use an external player.")
-              return
-          }
-
-         if GCKCastContext.sharedInstance().castState == .connected {
-             proceedWithCasting(videoURL: sourceURL)
-         } else {
-             cleanupPlayer() // Clean up before presenting new player
-
-             player = AVPlayer(url: sourceURL)
-             playerViewController = NormalPlayer()
-             playerViewController?.player = player
-             playerViewController?.delegate = self // Set delegate for PiP
-             // playerViewController?.entersFullScreenWhenPlaybackBegins = true // Often default behavior
-             // playerViewController?.showsPlaybackControls = true // Default is true
-
-             let lastPlayedTime = UserDefaults.standard.double(forKey: "lastPlayedTime_\(fullURL)")
-
-             playerViewController?.modalPresentationStyle = .fullScreen
-             present(playerViewController!, animated: true) {
-                 if lastPlayedTime > 0 {
-                     let seekTime = CMTime(seconds: lastPlayedTime, preferredTimescale: 1)
-                     self.player?.seek(to: seekTime) { [weak self] _ in // Use weak self
-                         self?.player?.play()
-                     }
-                 } else {
-                     self.player?.play()
-                 }
-                 self.addPeriodicTimeObserver(cell: cell, fullURL: fullURL) // Add observer after presenting
-             }
-             // Observe playback end AFTER setting up the player
-             NotificationCenter.default.addObserver(self, selector: #selector(playerItemDidReachEnd), name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem)
-         }
-     }
-
-
     // MARK: - Playback Progress & State
      private func addPeriodicTimeObserver(cell: EpisodeCell, fullURL: String) {
          if let token = timeObserverToken {
@@ -1406,14 +1070,14 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
              guard let self = self,
                    let currentItem = self.player?.currentItem, // Use optional chaining
                    currentItem.duration.seconds.isFinite,
-                   currentItem.duration.seconds > 0 else {
+                   currentItem.duration.seconds > 0 else { // Check duration validity and positivity
                        return
                    }
              self.updatePlaybackProgress(time: time, duration: currentItem.duration.seconds, cell: cell, fullURL: fullURL)
          }
      }
 
-    private func updatePlaybackProgress(time: CMTime, duration: Double, cell: EpisodeCell, fullURL: String) {
+     private func updatePlaybackProgress(time: CMTime, duration: Double, cell: EpisodeCell, fullURL: String) {
          let currentTime = time.seconds
          let progress = Float(currentTime / duration)
          let remainingTime = duration - currentTime
@@ -1427,20 +1091,20 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          sendPushUpdates(remainingTime: remainingTime, totalTime: duration, fullURL: fullURL)
      }
 
-
     private func updateContinueWatchingItem(currentTime: Double, duration: Double, fullURL: String) {
-        guard let episode = episodes.first(where: { $0.href == fullURL }), // Find episode by URL
-              let episodeNumberInt = Int(episode.number), // Use the found episode's number
-              let currentTitle = animeTitle, // Use controller's title
-              let currentImage = imageUrl, // Use controller's image URL
-              let currentSource = displayedDataSource?.rawValue // Use stored source
-              else {
+        // Find the episode based on the fullURL passed to the player
+        guard let episode = episodes.first(where: { $0.href == fullURL }),
+              let episodeNumberInt = episode.episodeNumber as Int?, // Safely get episode number
+              let currentTitle = animeTitle,
+              let currentImage = imageUrl,
+              let currentSource = displayedDataSource?.rawValue else {
+            print("Error: Could not find episode or necessary info to update continue watching.")
             return
         }
 
         let continueWatchingItem = ContinueWatchingItem(
             animeTitle: currentTitle,
-            episodeTitle: "Ep. \(episodeNumberInt)",
+            episodeTitle: "Ep. \(episodeNumberInt)", // Format consistently
             episodeNumber: episodeNumberInt,
             imageURL: currentImage,
             fullURL: fullURL,
@@ -1451,30 +1115,29 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         ContinueWatchingManager.shared.saveItem(continueWatchingItem)
     }
 
-
     private func sendPushUpdates(remainingTime: Double, totalTime: Double, fullURL: String) {
-        guard UserDefaults.standard.bool(forKey: "sendPushUpdates"),
-              totalTime > 0, remainingTime / totalTime < 0.15, !hasSentUpdate,
-              let episode = episodes.first(where: { $0.href == fullURL }),
-              let episodeNumberInt = Int(episode.number),
-              let currentTitle = animeTitle else {
-            return
-        }
+         guard UserDefaults.standard.bool(forKey: "sendPushUpdates"),
+               totalTime > 0, remainingTime / totalTime < 0.15, !hasSentUpdate,
+               let episode = episodes.first(where: { $0.href == fullURL }), // Find episode
+               let episodeNumberInt = episode.episodeNumber as Int?, // Use its number
+               let currentTitle = animeTitle else {
+             return
+         }
 
-        let cleanedTitle = cleanTitle(currentTitle)
+         let cleanedTitle = cleanTitle(currentTitle)
 
-        fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
-            guard animeID != 0 else { // Check if fetching ID failed
-                print("Could not fetch valid AniList ID for progress update.")
-                return
-            }
-            let aniListMutation = AniListMutation()
-            aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumberInt) { result in
-                // Handle result...
-            }
-            self?.hasSentUpdate = true // Set flag on self
-        }
-    }
+         fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
+             guard animeID != 0 else {
+                 print("Could not fetch valid AniList ID for progress update.")
+                 return
+             }
+             let aniListMutation = AniListMutation()
+             aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumberInt) { result in
+                 // Handle result...
+             }
+             self?.hasSentUpdate = true // Set flag on self
+         }
+     }
 
 
     // fetchAnimeID remains the same
@@ -1501,50 +1164,45 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
           }
       }
 
-    // playNextEpisode remains the same
     func playNextEpisode() {
-        guard let animeDetailsViewController = self.animeDetailsViewController else {
-            print("Error: animeDetailsViewController is nil in playNextEpisode")
-            return
-        }
-
+        // Use self directly, not animeDetailsViewController
         let nextIndex: Int
-         if animeDetailsViewController.isReverseSorted {
-             nextIndex = animeDetailsViewController.currentEpisodeIndex - 1
+         if self.isReverseSorted { // Use self.isReverseSorted
+             nextIndex = self.currentEpisodeIndex - 1
              guard nextIndex >= 0 else {
                  print("Already at the first episode (reversed).")
-                 animeDetailsViewController.currentEpisodeIndex = 0
+                 self.currentEpisodeIndex = 0
                  return
              }
          } else {
-             nextIndex = animeDetailsViewController.currentEpisodeIndex + 1
-             guard nextIndex < animeDetailsViewController.episodes.count else {
+             nextIndex = self.currentEpisodeIndex + 1
+             guard nextIndex < self.episodes.count else { // Use self.episodes
                  print("Already at the last episode.")
-                 animeDetailsViewController.currentEpisodeIndex = animeDetailsViewController.episodes.count - 1
+                 self.currentEpisodeIndex = self.episodes.count - 1
                  return
              }
          }
-        animeDetailsViewController.currentEpisodeIndex = nextIndex
+        self.currentEpisodeIndex = nextIndex // Use self.currentEpisodeIndex
         playEpisode(at: nextIndex)
     }
 
-    // playEpisode remains the same
     private func playEpisode(at index: Int) {
-         guard let animeDetailsViewController = self.animeDetailsViewController,
-               index >= 0 && index < animeDetailsViewController.episodes.count else {
+         // Use self directly
+         guard index >= 0 && index < self.episodes.count else { // Use self.episodes
                    print("Error: Invalid index for playEpisode: \(index)")
                    return
                }
 
-         let nextEpisode = animeDetailsViewController.episodes[index]
-         if let cell = animeDetailsViewController.tableView.cellForRow(at: IndexPath(row: index, section: 2)) as? EpisodeCell {
-             animeDetailsViewController.episodeSelected(episode: nextEpisode, cell: cell)
+         let nextEpisode = self.episodes[index]
+         if let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 2)) as? EpisodeCell {
+             self.episodeSelected(episode: nextEpisode, cell: cell) // Use self.episodeSelected
          } else {
               print("Cell for episode \(nextEpisode.number) not visible, triggering selection logic directly.")
-              animeDetailsViewController.showLoadingBanner()
-              animeDetailsViewController.checkUserDefault(url: nextEpisode.href, cell: EpisodeCell(), fullURL: nextEpisode.href)
+              self.showLoadingBanner() // Use self.showLoadingBanner
+              self.checkUserDefault(url: nextEpisode.href, cell: EpisodeCell(), fullURL: nextEpisode.href) // Use self.checkUserDefault
           }
      }
+
 
     // playerItemDidReachEnd remains the same
     @objc func playerItemDidReachEnd(notification: Notification) {
@@ -1556,10 +1214,10 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
          print("Player item did reach end.")
 
          if UserDefaults.standard.bool(forKey: "AutoPlay") {
-              guard let animeDetailsViewController = self.animeDetailsViewController else { return }
-              let hasNextEpisode = animeDetailsViewController.isReverseSorted ?
-                  (animeDetailsViewController.currentEpisodeIndex > 0) :
-                  (animeDetailsViewController.currentEpisodeIndex < animeDetailsViewController.episodes.count - 1)
+             // Use self directly, check hasNextEpisode logic
+              let hasNextEpisode = self.isReverseSorted ?
+                  (self.currentEpisodeIndex > 0) :
+                  (self.currentEpisodeIndex < self.episodes.count - 1)
 
              if hasNextEpisode {
                   playerViewController?.dismiss(animated: true) { [weak self] in
@@ -1599,7 +1257,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
              let totalTime = UserDefaults.standard.double(forKey: "totalTime_\(fullURL)")
              let progress = (totalTime > 0) ? (lastPlayedTime / totalTime) : 0
 
-             if progress < 0.9 {
+             if progress < 0.9 { // Consider watched if >= 90%
                   if let index = episodes.firstIndex(of: episode) {
                       let indexPath = IndexPath(row: index, section: 2)
                       tableView.scrollToRow(at: indexPath, at: .middle, animated: true)
@@ -1607,7 +1265,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
                           if let cell = self.tableView.cellForRow(at: indexPath) as? EpisodeCell {
                                self.episodeSelected(episode: episode, cell: cell)
                           } else {
-                               self.episodeSelected(episode: episode, cell: EpisodeCell())
+                               self.episodeSelected(episode: episode, cell: EpisodeCell()) // Pass dummy if not visible
                            }
                       }
                   }
@@ -1615,6 +1273,7 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
               }
          }
 
+        // If all are watched, play the first one (respecting sort order)
         if let firstEpisode = sortedEpisodes.first, let index = episodes.firstIndex(of: firstEpisode) {
              let indexPath = IndexPath(row: index, section: 2)
              tableView.scrollToRow(at: indexPath, at: .middle, animated: true)
@@ -1642,9 +1301,9 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
              playerViewController = nil
          }
          if let token = timeObserverToken {
-              // Try removing observer only if player exists
-               // Ideally, the observer should be weak or invalidated when player is nilled
-              // player?.removeTimeObserver(token) // Avoid potential crash
+              // Player might be nil, so removing observer directly might crash
+              // Best practice is to ensure player isn't nil or manage observer lifecycle better
+              // For now, just nil out token
              timeObserverToken = nil
          }
       }
@@ -1660,22 +1319,12 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
           return cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
       }
 
-      // showAlert remains the same
-      func showAlert(title: String, message: String) {
-          let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
-          alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
-          DispatchQueue.main.async {
-              var topController = UIApplication.shared.windows.filter {$0.isKeyWindow}.first?.rootViewController
-              while let presentedViewController = topController?.presentedViewController {
-                  topController = presentedViewController
-              }
-              topController?.present(alertController, animated: true, completion: nil)
-          }
-      }
+      // Removed duplicate showAlert
 }
 
-// Conformances remain the same
-extension AnimeDetailViewController { // SynopsisCellDelegate moved to class declaration
+// MARK: - Delegate Implementations (Added/Corrected)
+
+extension AnimeDetailViewController { // SynopsisCellDelegate (Already present, moved from extension)
     func synopsisCellDidToggleExpansion(_ cell: SynopsisCell) {
         isSynopsisExpanded.toggle()
         tableView.beginUpdates()
@@ -1683,7 +1332,8 @@ extension AnimeDetailViewController { // SynopsisCellDelegate moved to class dec
     }
 }
 
-extension AnimeDetailViewController { // CustomPlayerViewDelegate moved to class declaration
+// Conformance to CustomPlayerViewDelegate is now in the class declaration
+extension AnimeDetailViewController { // CustomPlayerViewDelegate implementation
     func customPlayerViewDidDismiss() {
         // Handle dismissal if needed, e.g., check if playback finished
         print("Custom player was dismissed.")
