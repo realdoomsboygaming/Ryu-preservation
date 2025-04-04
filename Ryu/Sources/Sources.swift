@@ -7,7 +7,7 @@ enum MediaSource: String {
     case animefire = "AnimeFire"
     case kuramanime = "Kuramanime"
     case anime3rb = "Anime3rb"
-    case hianime = "HiAnime"
+    case anilist = "AniList" // Renamed from hianime
     case anilibria = "Anilibria"
     case animesrbija = "AnimeSRBIJA"
     case aniworld = "AniWorld"
@@ -28,7 +28,7 @@ extension MediaSource {
         case .animefire: return "AnimeFire"
         case .kuramanime: return "Kuramanime"
         case .anime3rb: return "Anime3rb"
-        case .hianime: return "HiAnime"
+        case .anilist: return "AniList"
         case .anilibria: return "Anilibria"
         case .animesrbija: return "AnimeSRBIJA"
         case .aniworld: return "AniWorld"
