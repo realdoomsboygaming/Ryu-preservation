@@ -230,47 +230,6 @@ class AnimeDetailViewController: UITableViewController, GCKRemoteMediaClientList
         present(alertController, animated: true, completion: nil)
     }
 
-    @objc private func showFilterOptions() {
-        let alertController = UIAlertController(title: "Filter Episodes", message: nil, preferredStyle: .actionSheet)
-    
-        // Select unwatched episodes
-        let selectUnwatchedAction = UIAlertAction(title: "Select Unwatched Episodes", style: .default) { [weak self] _ in
-            self?.selectUnwatchedEpisodes()
-        }
-    
-        // Select watched episodes
-        let selectWatchedAction = UIAlertAction(title: "Select Watched Episodes", style: .default) { [weak self] _ in
-            self?.selectWatchedEpisodes()
-        }
-    
-        // Range selection
-        let rangeSelectionAction = UIAlertAction(title: "Range Selection", style: .default) { [weak self] _ in
-            self?.showRangeSelectionDialog()
-        }
-    
-        // Deselect all
-        let deselectAllAction = UIAlertAction(title: "Deselect All", style: .default) { [weak self] _ in
-            self?.deselectAllEpisodes()
-        }
-    
-        // Cancel action
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
-    
-        // Add all actions
-        alertController.addAction(selectUnwatchedAction)
-        alertController.addAction(selectWatchedAction)
-        alertController.addAction(rangeSelectionAction)
-        alertController.addAction(deselectAllAction)
-        alertController.addAction(cancelAction)
-    
-        // Configure for iPad
-        if let popoverController = alertController.popoverPresentationController {
-            popoverController.barButtonItem = filterButton
-        }
-    
-        present(alertController, animated: true, completion: nil)
-    }
-
     private func selectUnwatchedEpisodes() {
         selectedEpisodes.removeAll()
     
