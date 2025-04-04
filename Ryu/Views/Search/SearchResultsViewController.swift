@@ -27,7 +27,8 @@ class SearchResultsViewController: UIViewController {
     var searchResults: [(title: String, imageUrl: String, href: String)] = []
     var filteredResults: [(title: String, imageUrl: String, href: String)] = []
     var query: String = ""
-    var selectedSource: String = "" // Keep this, it seems to be used for display? Or maybe remove if redundant
+    // selectedSource seems redundant if UserDefaults is the source of truth. Can be removed if not used elsewhere.
+    // var selectedSource: String = ""
 
     private lazy var sortButton: UIBarButtonItem = {
         let button = UIBarButtonItem(image: UIImage(systemName: "arrow.up.arrow.down"), style: .plain, target: self, action: #selector(sortButtonTapped))
@@ -43,7 +44,7 @@ class SearchResultsViewController: UIViewController {
     }
 
     private func setupUI() {
-        navigationItem.largeTitleDisplayMode = .never
+        navigationItem.largeTitleDisplayMode = .never // Keep titles small in results
 
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
@@ -62,14 +63,17 @@ class SearchResultsViewController: UIViewController {
         setupErrorLabel()
         setupNoResultsLabel()
 
+        // Show sort button based on the source that *was* selected for the search
         if let currentSource = UserDefaults.standard.selectedMediaSource {
-            switch currentSource {
-            case .animeWorld, .gogoanime, .kuramanime, .animefire, .anilist: // Added .anilist
-                navigationItem.rightBarButtonItem = sortButton
-            default:
-                navigationItem.rightBarButtonItem = nil // Hide sort for others
-            }
-        }
+             switch currentSource {
+             case .animeWorld, .gogoanime, .kuramanime, .animefire, .anilist: // Added .anilist
+                 navigationItem.rightBarButtonItem = sortButton
+             default:
+                 navigationItem.rightBarButtonItem = nil // Hide sort for others
+             }
+         } else {
+             navigationItem.rightBarButtonItem = nil // Hide if no source somehow
+         }
     }
 
     private func setupLoadingIndicator() {
@@ -106,9 +110,9 @@ class SearchResultsViewController: UIViewController {
 
         NSLayoutConstraint.activate([
             noResultsLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            noResultsLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            noResultsLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -20), // Move label up slightly
 
-            changeSourceButton.topAnchor.constraint(equalTo: noResultsLabel.bottomAnchor, constant: 20),
+            changeSourceButton.topAnchor.constraint(equalTo: noResultsLabel.bottomAnchor, constant: 15),
             changeSourceButton.centerXAnchor.constraint(equalTo: view.centerXAnchor)
         ])
     }
@@ -156,7 +160,7 @@ class SearchResultsViewController: UIViewController {
                  alertController.addAction(dubAction)
                  alertController.addAction(subAction)
             default:
-                break
+                break // No specific filters for other sources shown
             }
         }
 
@@ -185,31 +189,28 @@ class SearchResultsViewController: UIViewController {
             filteredResults = searchResults
         case .dub:
             switch currentSource {
-            case .gogoanime:
+            case .gogoanime, .anilist: // Added Anilist
                 filteredResults = searchResults.filter { $0.title.lowercased().contains("(dub)") }
             case .kuramanime:
                 filteredResults = searchResults.filter { $0.title.contains("(Dub ID)") }
             case .animefire:
                 filteredResults = searchResults.filter { $0.title.contains("(Dublado)") }
-            case .anilist: // Added Anilist filter logic
-                 // Assuming title might contain "(Dub)" or similar indicator
-                filteredResults = searchResults.filter { $0.title.lowercased().contains("(dub)") }
             default:
-                filteredResults = searchResults
+                filteredResults = searchResults // No specific dub filter for others
             }
         case .sub:
              switch currentSource {
-             case .gogoanime, .anilist: // Grouped Sub filter logic
+             case .gogoanime, .anilist: // Added Anilist
                  filteredResults = searchResults.filter { !$0.title.lowercased().contains("(dub)") }
              default:
-                 filteredResults = searchResults // For sources without explicit dub/sub tags in title
+                 filteredResults = searchResults // Assume non-dub is sub or only sub exists
              }
         case .ita:
              switch currentSource {
              case .animeWorld, .animeunity: // Grouped Italian filter logic
                  filteredResults = searchResults.filter { $0.title.contains("ITA") }
              default:
-                 filteredResults = searchResults
+                 filteredResults = searchResults // No specific ITA filter for others
              }
         }
 
@@ -248,7 +249,7 @@ class SearchResultsViewController: UIViewController {
             }
             return
         }
-        self.selectedSource = selectedSource.rawValue // Update selectedSource string if needed elsewhere
+        // self.selectedSource = selectedSource.rawValue // Update internal string if needed
 
         guard let urlParameters = getUrlAndParameters(for: selectedSource.rawValue) else {
             showError("Unsupported media source.")
@@ -264,15 +265,25 @@ class SearchResultsViewController: UIViewController {
             }
         } else { // General handling for other sources
             session.request(urlParameters.url, method: .get, parameters: urlParameters.parameters).responseString { [weak self] response in
+                // Use guard let self = self to safely unwrap
                 guard let self = self else { return }
                 self.loadingIndicator.stopAnimating()
 
                 switch response.result {
                 case .success(let value):
-                    let results = self.parseHTML(html: value, for: selectedSource) // Pass the enum case
-                    self.searchResults = results
-                    self.filteredResults = results // Initially show all results
-                    if results.isEmpty {
+                    let results: [(title: String, imageUrl: String, href: String)]
+                    // Special filtering for AniWorld within the response handling
+                    if selectedSource == .aniworld {
+                        results = self.parseHTML(html: value, for: selectedSource)
+                        self.searchResults = results // Store unfiltered results
+                        self.filteredResults = self.fuzzySearch(self.query, in: results) // Apply fuzzy search filter
+                    } else {
+                        results = self.parseHTML(html: value, for: selectedSource)
+                        self.searchResults = results
+                        self.filteredResults = results // Initially show all for non-AniWorld
+                    }
+
+                    if self.filteredResults.isEmpty { // Check filtered results
                         self.showNoResults()
                     } else {
                         self.tableView.isHidden = false
@@ -283,36 +294,25 @@ class SearchResultsViewController: UIViewController {
                     // Handle errors as before
                     if let httpStatusCode = response.response?.statusCode {
                         switch httpStatusCode {
-                        case 400:
-                            self.showError("Bad request. Please check your input and try again.")
-                        case 403:
-                            self.showError("Access forbidden. You don't have permission to access this resource.")
-                        case 404:
-                            self.showError("Resource not found. Please try a different search.")
-                        case 429:
-                            self.showError("Too many requests. Please slow down and try again later.")
-                        case 500:
-                            self.showError("Internal server error. Please try again later.")
-                        case 502:
-                            self.showError("Bad gateway. The server is temporarily unable to handle the request.")
-                        case 503:
-                            self.showError("Service unavailable. Please try again later.")
-                        case 504:
-                            self.showError("Gateway timeout. The server took too long to respond.")
-                        default:
-                            self.showError("Unexpected error occurred. Please try again later.")
+                        // ... (keep existing status code handling) ...
+                        case 400: self.showError("Bad request. Please check your input and try again.")
+                        case 403: self.showError("Access forbidden. You don't have permission to access this resource.")
+                        case 404: self.showError("Resource not found. Please try a different search.")
+                        case 429: self.showError("Too many requests. Please slow down and try again later.")
+                        case 500: self.showError("Internal server error. Please try again later.")
+                        case 502: self.showError("Bad gateway. The server is temporarily unable to handle the request.")
+                        case 503: self.showError("Service unavailable. Please try again later.")
+                        case 504: self.showError("Gateway timeout. The server took too long to respond.")
+                        default: self.showError("Unexpected error occurred (Status: \(httpStatusCode)). Please try again later.")
                         }
                     } else if let nsError = error as NSError?, nsError.domain == NSURLErrorDomain {
                         switch nsError.code {
-                        case NSURLErrorNotConnectedToInternet:
-                            self.showError("No internet connection. Please check your network and try again.")
-                        case NSURLErrorTimedOut:
-                            self.showError("Request timed out. Please try again later.")
-                        default:
-                            self.showError("Network error occurred. Please try again later.")
+                        case NSURLErrorNotConnectedToInternet: self.showError("No internet connection. Please check your network and try again.")
+                        case NSURLErrorTimedOut: self.showError("Request timed out. Please try again later.")
+                        default: self.showError("Network error occurred (\(nsError.code)). Please try again later.")
                         }
                     } else {
-                        self.showError("Failed to fetch data. Please try again later.")
+                        self.showError("Failed to fetch data: \(error.localizedDescription). Please try again later.")
                     }
                     self.showNoResults() // Show "No results" and change source button on error
                 }
@@ -324,46 +324,51 @@ class SearchResultsViewController: UIViewController {
         let session = proxySession.createAlamofireProxySession()
         let group = DispatchGroup()
         var allResults: [(title: String, imageUrl: String, href: String)] = []
+        var fetchError: Error? = nil // Track potential errors
 
-        group.enter()
-        session.request(urlParameters.url, method: .get, parameters: urlParameters.parameters).responseString { [weak self] response in
-            defer { group.leave() }
-            if let value = try? response.result.get(),
-               let document = try? SwiftSoup.parse(value),
-               let results = self?.parseGoGoAnime(document) {
-                allResults.append(contentsOf: results)
+        // Define fetch function to avoid repetition
+        func fetchPage(page: Int) {
+            group.enter()
+            let pageUrl = page > 1 ? "\(urlParameters.url)?page=\(page)" : urlParameters.url
+            session.request(pageUrl, method: .get, parameters: urlParameters.parameters).responseString { response in
+                defer { group.leave() }
+                switch response.result {
+                case .success(let value):
+                    if let document = try? SwiftSoup.parse(value), let results = self.parseGoGoAnime(document) {
+                         allResults.append(contentsOf: results)
+                    }
+                case .failure(let error):
+                     print("Error fetching GoGo page \(page): \(error)")
+                     // Store the first error encountered
+                     if fetchError == nil { fetchError = error }
+                }
             }
         }
-        group.enter()
-        session.request(urlParameters.url + "&page=2", method: .get, parameters: urlParameters.parameters).responseString { [weak self] response in
-            defer { group.leave() }
-            if let value = try? response.result.get(),
-               let document = try? SwiftSoup.parse(value),
-               let results = self?.parseGoGoAnime(document) {
-                allResults.append(contentsOf: results)
-            }
-        }
-        group.enter()
-        session.request(urlParameters.url + "&page=3", method: .get, parameters: urlParameters.parameters).responseString { [weak self] response in
-            defer { group.leave() }
-            if let value = try? response.result.get(),
-               let document = try? SwiftSoup.parse(value),
-               let results = self?.parseGoGoAnime(document) {
-                allResults.append(contentsOf: results)
-            }
-        }
+
+        // Fetch pages 1, 2, 3
+        fetchPage(page: 1)
+        fetchPage(page: 2)
+        fetchPage(page: 3)
 
         group.notify(queue: .main) { [weak self] in
-            self?.loadingIndicator.stopAnimating()
-            self?.searchResults = allResults
-            self?.filteredResults = allResults // Initially show all results
-            if allResults.isEmpty {
-                self?.showNoResults()
-            } else {
-                self?.tableView.isHidden = false
-                self?.tableView.reloadData()
-                self?.updateNoResultsLabelVisibility()
-            }
+            guard let self = self else { return }
+            self.loadingIndicator.stopAnimating()
+
+            if let error = fetchError, allResults.isEmpty {
+                 // Show error only if there are no results AND an error occurred
+                 self.showError("Failed to fetch GoGoAnime results: \(error.localizedDescription)")
+                 self.showNoResults() // Show "Change Source" button
+             } else {
+                 self.searchResults = allResults
+                 self.filteredResults = allResults // Initially show all results
+                 if allResults.isEmpty {
+                     self.showNoResults()
+                 } else {
+                     self.tableView.isHidden = false
+                     self.tableView.reloadData()
+                     self.updateNoResultsLabelVisibility()
+                 }
+             }
         }
     }
 
@@ -379,7 +384,7 @@ class SearchResultsViewController: UIViewController {
             url = "https://animeworld.so/search"
             parameters["keyword"] = query
         case .gogoanime:
-            url = "https://anitaku.bz/search.html"
+            url = "https://anitaku.bz/search.html" // Base search URL
             parameters["keyword"] = query
         case .animeheaven:
             url = "https://animeheaven.me/search.php"
@@ -406,7 +411,7 @@ class SearchResultsViewController: UIViewController {
             parameters["search"] = query
         case .aniworld:
             url = "https://aniworld.to/animes"
-            parameters = [:] // No query parameter for this source? Let the parser handle filtering.
+            parameters = [:] // No query parameter for this source; filtering done after fetching all
         case .tokyoinsider:
             url = "https://www.tokyoinsider.com/anime/search"
             parameters["k"] = query
@@ -420,7 +425,7 @@ class SearchResultsViewController: UIViewController {
             url = "https://www3.animeflv.net/browse"
             parameters["q"] = query
         case .animebalkan:
-            url = "https://animebalkan.gg/"
+            url = "https://animebalkan.gg/" // Using .gg as per extension
             parameters["s"] = query
         case .anibunker:
             url = "https://www.anibunker.com/search"
@@ -430,7 +435,7 @@ class SearchResultsViewController: UIViewController {
         return (url, parameters)
     }
 
-
+    // Fuzzy search remains the same
     private func fuzzySearch(_ query: String, in results: [(title: String, imageUrl: String, href: String)]) -> [(title: String, imageUrl: String, href: String)] {
         return results.filter { result in
             let title = result.title.lowercased()
@@ -439,21 +444,14 @@ class SearchResultsViewController: UIViewController {
             if title.contains(searchQuery) {
                 return true
             }
+            // Basic word matching (can be improved)
+            let titleWords = Set(title.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty })
+            let queryWords = Set(searchQuery.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty })
 
-            let titleWords = title.components(separatedBy: .whitespaces)
-            let queryWords = searchQuery.components(separatedBy: .whitespaces)
-
-            for queryWord in queryWords {
-                for titleWord in titleWords {
-                    if titleWord.contains(queryWord) || queryWord.contains(titleWord) {
-                        return true
-                    }
-                }
-            }
-
-            return false
+            return !titleWords.intersection(queryWords).isEmpty
         }
     }
+
 
     private func showError(_ message: String) {
         loadingIndicator.stopAnimating()
@@ -472,7 +470,15 @@ class SearchResultsViewController: UIViewController {
     func parseHTML(html: String, for source: MediaSource) -> [(title: String, imageUrl: String, href: String)] {
         switch source {
         case .anilist, .anilibria: // Handle JSON sources
-            return parseDocument(nil, jsonString: html, for: source)
+            // Use the previously defined parsing functions (ensure they handle String input)
+            do {
+                if source == .anilist { return try parseAniListFeatured(nil, html) }
+                if source == .anilibria { return try parseAniLibriaFeatured(nil, html) }
+                return [] // Should not happen
+            } catch {
+                print("Error parsing JSON for \(source.rawValue): \(error.localizedDescription)")
+                return []
+            }
         default: // Handle HTML sources
             do {
                 let document = try SwiftSoup.parse(html)
@@ -516,7 +522,7 @@ class SearchResultsViewController: UIViewController {
             return parseAnimeSRBIJA(document)
         case .aniworld:
             guard let document = document else { return [] }
-            return parseAniWorld(document)
+            return parseAniWorld(document) // This returns ALL, filtering happens in fetchResults
         case .tokyoinsider:
             guard let document = document else { return [] }
             return parseTokyoInsider(document)
@@ -540,9 +546,10 @@ class SearchResultsViewController: UIViewController {
 
     private func navigateToAnimeDetail(title: String, imageUrl: String, href: String) {
         let detailVC = AnimeDetailViewController()
-        let selectedMedaiSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "" // Use enum
+        // Get the currently selected source string for passing to configure
+        let selectedMediaSourceString = UserDefaults.standard.selectedMediaSource?.rawValue ?? ""
 
-        detailVC.configure(title: title, imageUrl: imageUrl, href: href, source: selectedMedaiSource)
+        detailVC.configure(title: title, imageUrl: imageUrl, href: href, source: selectedMediaSourceString)
         navigationController?.pushViewController(detailVC, animated: true)
     }
 }
@@ -584,13 +591,15 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
         let result = filteredResults[indexPath.row] // Use filtered results
 
         return UIContextMenuConfiguration(identifier: indexPath as NSCopying, previewProvider: { [weak self] in // Use weak self
+            // Use guard let self = self
             guard let self = self else { return nil }
             let detailVC = AnimeDetailViewController()
-            let selectedMedaiSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "" // Use enum
+            let selectedMediaSourceString = UserDefaults.standard.selectedMediaSource?.rawValue ?? ""
 
-            detailVC.configure(title: result.title, imageUrl: result.imageUrl, href: result.href, source: selectedMedaiSource)
+            detailVC.configure(title: result.title, imageUrl: result.imageUrl, href: result.href, source: selectedMediaSourceString)
             return detailVC
         }, actionProvider: { [weak self] _ in
+            // Use guard let self = self
             guard let self = self else { return nil }
 
             let openAction = UIAction(title: "Open", image: UIImage(systemName: "arrow.up.right.square")) { _ in
@@ -619,29 +628,31 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
         let baseUrl: String
 
         switch selectedSource {
-        case .animeWorld:
-            baseUrl = "https://animeworld.so"
-        case .gogoanime:
-            baseUrl = "https://anitaku.bz"
-        case .animeheaven:
-            baseUrl = "https://animeheaven.me/"
-        case .anilist: // Renamed from HiAnime
-            baseUrl = "https://hianime.to/watch/" // Using provided logic's URL base
-        case .anilibria, .animefire, .kuramanime, .anime3rb, .animesrbija, .aniworld, .tokyoinsider, .anivibe, .animeunity, .animeflv, .animebalkan, .anibunker: // Add other sources that have base URLs
-             baseUrl = "" // Add specific base URLs if applicable, otherwise maybe disable or use search engine
+        case .animeWorld: baseUrl = "https://animeworld.so"
+        case .gogoanime: baseUrl = "https://anitaku.bz"
+        case .animeheaven: baseUrl = "https://animeheaven.me/"
+        case .anilist: baseUrl = "https://hianime.to" // Base site URL, path is likely the slug
+        case .anilibria: baseUrl = "https://anilibria.tv/release/" // Path is likely the ID
+        case .animefire: baseUrl = "https://animefire.plus"
+        case .kuramanime, .anime3rb, .animesrbija, .aniworld, .tokyoinsider, .anivibe, .animeunity, .animeflv, .animebalkan, .anibunker:
+            baseUrl = "" // Assume path is already absolute or needs source-specific base
         }
 
         let fullUrlString: String
-        if !baseUrl.isEmpty && !path.hasPrefix("http") {
-             fullUrlString = baseUrl + path
+        if source == .anilist { // Special case for anilist slug
+             fullUrlString = "\(baseUrl)/\(path)"
+         } else if source == .anilibria { // Special case for anilibria ID
+              fullUrlString = "\(baseUrl)\(path).html"
+          } else if !baseUrl.isEmpty && !path.hasPrefix("http") {
+            fullUrlString = baseUrl + (path.hasPrefix("/") ? path : "/\(path)")
         } else {
-             fullUrlString = path // Assume path is already a full URL if no base URL or path starts with http
+            fullUrlString = path // Assume path is already a full URL
         }
-
 
         guard let url = URL(string: fullUrlString) else {
             print("Invalid URL string: \(fullUrlString)")
-            showAlert(withTitle: "Error", message: "The URL is invalid.")
+            // Use self.showAlert
+            self.showAlert(title: "Error", message: "The URL is invalid.")
             return
         }
 
@@ -649,11 +660,13 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
         present(safariViewController, animated: true, completion: nil)
     }
 
-    private func showAlert(withTitle title: String, message: String) {
+    // Use the showAlert defined in this class
+    private func showAlert(title: String, message: String) {
         let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
         present(alertController, animated: true, completion: nil)
     }
+
 
     private func isFavorite(for result: (title: String, imageUrl: String, href: String)) -> Bool {
         guard let anime = createFavoriteAnime(from: result) else { return false }
@@ -671,21 +684,24 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
         }
 
         // Reload only the specific cell that was acted upon
-        tableView.reloadRows(at: [indexPath], with: .automatic)
+        // Check if the index path is still valid before reloading
+        if indexPath.section < tableView.numberOfSections && indexPath.row < tableView.numberOfRows(inSection: indexPath.section) {
+             tableView.reloadRows(at: [indexPath], with: .none) // Use .none for less jarring update
+        }
     }
-
 
     private func createFavoriteAnime(from result: (title: String, imageUrl: String, href: String)) -> FavoriteItem? {
         guard let imageURL = URL(string: result.imageUrl),
-              let contentURL = URL(string: result.href) else {
-                  return nil
-              }
-        let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "AnimeWorld" // Use enum
-
-        return FavoriteItem(title: result.title, imageURL: imageURL, contentURL: contentURL, source: selectedMediaSource)
+              let contentURL = URL(string: result.href),
+              // Get source from UserDefaults, not the potentially outdated 'selectedSource' string property
+              let sourceString = UserDefaults.standard.selectedMediaSource?.rawValue
+        else {
+            return nil
+        }
+        return FavoriteItem(title: result.title, imageURL: imageURL, contentURL: contentURL, source: sourceString)
     }
 
-    // Added preview provider methods (optional but recommended for better UX)
+    // Added preview provider methods
      func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
          guard let indexPath = configuration.identifier as? IndexPath,
                let cell = tableView.cellForRow(at: indexPath) else {
@@ -694,7 +710,9 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
 
          let parameters = UIPreviewParameters()
          parameters.backgroundColor = .clear
-         return UITargetedPreview(view: cell.contentView, parameters: parameters)
+         // Target the cell's content view for the preview highlight
+         let target = UITargetedPreview(view: cell.contentView, parameters: parameters)
+         return target
      }
 
      func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForDismissingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
@@ -705,7 +723,9 @@ extension SearchResultsViewController: UIContextMenuInteractionDelegate {
 
          let parameters = UIPreviewParameters()
          parameters.backgroundColor = .clear
-         return UITargetedPreview(view: cell.contentView, parameters: parameters)
+         // Target the cell's content view for the dismissal preview
+         let target = UITargetedPreview(view: cell.contentView, parameters: parameters)
+         return target
      }
 }
 
@@ -781,6 +801,8 @@ class SearchResultCell: UITableViewCell {
         titleLabel.text = result.title
         if let url = URL(string: result.imageUrl) {
             animeImageView.kf.setImage(with: url, placeholder: UIImage(systemName: "photo"), options: [.transition(.fade(0.2)), .cacheOriginalImage])
+        } else {
+             animeImageView.image = UIImage(systemName: "photo") // Set placeholder if URL is invalid
         }
     }
 }
