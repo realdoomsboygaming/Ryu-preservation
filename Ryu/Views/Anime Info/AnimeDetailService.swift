@@ -1,4 +1,3 @@
-// Ryu/Views/Anime Info/AnimeDetailService.swift
 import UIKit
 import Alamofire
 import SwiftSoup // Ensure SwiftSoup is imported
