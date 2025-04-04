@@ -24,6 +24,7 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
     private var originalRate: Float = 1.0
     private var holdGesture: UILongPressGestureRecognizer?
     private var qualityOptions: [(label: String, url: URL)] = [] // Changed to store URLs directly
+    private var isVideoPlaying = false // Added flag
 
     init(streamURL: String, cell: EpisodeCell, fullURL: String, animeDetailsViewController: AnimeDetailViewController) {
         self.streamURL = streamURL
@@ -173,7 +174,8 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
 
     private func extractIframeSource() {
         webView?.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] (result, error) in // Use outerHTML
-            guard let self = self, let htmlString = result as? String else {
+            guard let self = self else { return } // Use guard let self
+            guard let htmlString = result as? String else {
                 print("Error getting HTML for iframe extraction: \(error?.localizedDescription ?? "Unknown error")")
                 self.retryExtraction()
                 return
@@ -200,7 +202,8 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
 
     private func extractVideoSource() {
         webView?.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] (result, error) in // Use outerHTML
-            guard let self = self, let htmlString = result as? String else {
+            guard let self = self else { return } // Use guard let self
+            guard let htmlString = result as? String else {
                 print("Error getting HTML for video source extraction: \(error?.localizedDescription ?? "Unknown error")")
                 self.retryExtraction()
                 return
@@ -236,10 +239,6 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
              .replacingOccurrences(of: "'", with: "\"") // Replace single quotes with double
              .replacingOccurrences(of: #"(\w+):"#, with: "\"$1\":", options: .regularExpression) // Add quotes to keys
 
-          // Add surrounding braces to make it a valid JSON object string if needed,
-          // though it's an array, so brackets might be more appropriate if parsing directly.
-          // For simplicity, let's try parsing assuming it's objects within an array structure.
-
          // Try parsing as an array of dictionaries
          guard let data = "[\(cleanedJsonString)]".data(using: .utf8), // Wrap in brackets
                let jsonArray = try? JSONSerialization.jsonObject(with: data, options: .allowFragments) as? [[String: Any]] else {
@@ -255,7 +254,6 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
                  options.append((label: label, url: url))
              }
          }
-
 
          // Sort by quality descending (e.g., 1080p first)
          return options.isEmpty ? nil : options.sorted {
@@ -340,15 +338,19 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
         present(alertController, animated: true, completion: nil)
     }
 
+
     private func extractIframeSourceURL(from htmlString: String) -> URL? {
         do {
             let doc: Document = try SwiftSoup.parse(htmlString)
-            guard let iframeElement = try doc.select("iframe").first(), // More robust selector
-                  let sourceURLString = try iframeElement.attr("src").nilIfEmpty,
-                  let sourceURL = URL(string: sourceURLString) else {
+            guard let iframeElement = try doc.select("iframe[src]").first(), // Be more specific
+                  let sourceURLString = try iframeElement.attr("src").nilIfEmpty else {
                       return nil
                   }
-            return sourceURL
+            // Handle schema-relative URLs (e.g., //example.com)
+             if sourceURLString.hasPrefix("//") {
+                  return URL(string: "https:" + sourceURLString)
+              }
+            return URL(string: sourceURLString)
         } catch {
             print("Error parsing HTML with SwiftSoup for iframe: \(error)")
             return nil
@@ -358,6 +360,7 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
     private func handleVideoURL(url: URL) {
         DispatchQueue.main.async {
             self.activityIndicator?.stopAnimating()
+            self.isVideoPlaying = true // Mark as playing
 
             if UserDefaults.standard.bool(forKey: "isToDownload") {
                 self.handleDownload(url: url)
@@ -406,10 +409,11 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
                 switch result {
                 case .success(let downloadURL):
                     print("Download completed. File saved at: \(downloadURL)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
+                    // Use correct argument label 'title:'
+                    self?.animeDetailsViewController?.showAlert(title: "Download Completed!", message: "You can find your download in the Library -> Downloads.")
                 case .failure(let error):
                     print("Download failed with error: \(error.localizedDescription)")
-                    self?.animeDetailsViewController?.showAlert(withTitle: "Download Failed", message: error.localizedDescription)
+                    self?.animeDetailsViewController?.showAlert(title: "Download Failed", message: error.localizedDescription)
                 }
             }
         }
@@ -504,75 +508,93 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
         timeObserverToken = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self,
                   let currentItem = self.player?.currentItem,
-                  currentItem.duration.seconds.isFinite, // Check duration validity
-                   duration > 0 else { // Ensure duration is positive
+                  currentItem.duration.seconds.isFinite else { // Check duration validity
                       return
                   }
 
-            let currentTime = time.seconds
+            // Fix: Access duration *after* checking validity
             let duration = currentItem.duration.seconds
-            let progress = Float(currentTime / duration) // Calculate progress
-            let remainingTime = duration - currentTime
+            guard duration > 0 else { return } // Ensure duration is positive
 
-            self.cell.updatePlaybackProgress(progress: progress, remainingTime: remainingTime)
+            self.updatePlaybackProgress(time: time, duration: duration)
+        }
+    }
 
-            UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(self.fullURL)")
-            UserDefaults.standard.set(duration, forKey: "totalTime_\(self.fullURL)")
+    private func updatePlaybackProgress(time: CMTime, duration: Double) {
+         let currentTime = time.seconds
+         let progress = Float(currentTime / duration)
+         let remainingTime = duration - currentTime
 
-            // Update Continue Watching Item
-            if let viewController = self.animeDetailsViewController,
-               let episodeNumberString = viewController.episodes[safe: viewController.currentEpisodeIndex]?.number,
-               let episodeNumberInt = Int(episodeNumberString) { // Safely convert
+         cell.updatePlaybackProgress(progress: progress, remainingTime: remainingTime)
+         UserDefaults.standard.set(currentTime, forKey: "lastPlayedTime_\(fullURL)")
+         UserDefaults.standard.set(duration, forKey: "totalTime_\(fullURL)")
 
-                 let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "Anime3rb"
+         updateContinueWatchingItem(currentTime: currentTime, duration: duration)
+         sendPushUpdates(remainingTime: remainingTime, totalTime: duration)
+     }
 
-                 let continueWatchingItem = ContinueWatchingItem(
-                     animeTitle: viewController.animeTitle ?? "Unknown Anime",
-                     episodeTitle: "Ep. \(episodeNumberInt)",
-                     episodeNumber: episodeNumberInt,
-                     imageURL: viewController.imageUrl ?? "",
-                     fullURL: self.fullURL,
-                     lastPlayedTime: currentTime,
-                     totalTime: duration,
-                     source: selectedMediaSource
-                 )
-                 ContinueWatchingManager.shared.saveItem(continueWatchingItem)
 
-                // Send AniList Update
-                 let shouldSendPushUpdates = UserDefaults.standard.bool(forKey: "sendPushUpdates")
+    private func updateContinueWatchingItem(currentTime: Double, duration: Double) {
+        if let viewController = self.animeDetailsViewController,
+           let episodeNumberString = viewController.episodes[safe: viewController.currentEpisodeIndex]?.number,
+           let episodeNumberInt = Int(episodeNumberString) { // Safely convert to Int
 
-                 if shouldSendPushUpdates && remainingTime / duration < 0.15 && !viewController.hasSentUpdate {
-                     let cleanedTitle = viewController.cleanTitle(viewController.animeTitle ?? "Unknown Anime")
+            let selectedMediaSource = UserDefaults.standard.selectedMediaSource?.rawValue ?? "Anime3rb" // Use enum
 
-                     viewController.fetchAnimeID(title: cleanedTitle) { animeID in
-                         let aniListMutation = AniListMutation()
-                         aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumberInt) { result in
-                             switch result {
-                             case .success():
-                                 print("Successfully updated anime progress.")
-                             case .failure(let error):
-                                 print("Failed to update anime progress: \(error.localizedDescription)")
-                             }
-                         }
+            let continueWatchingItem = ContinueWatchingItem(
+                animeTitle: viewController.animeTitle ?? "Unknown Anime",
+                episodeTitle: "Ep. \(episodeNumberInt)",
+                episodeNumber: episodeNumberInt,
+                imageURL: viewController.imageUrl ?? "",
+                fullURL: fullURL,
+                lastPlayedTime: currentTime,
+                totalTime: duration,
+                source: selectedMediaSource
+            )
+            ContinueWatchingManager.shared.saveItem(continueWatchingItem)
+        }
+    }
 
-                         viewController.hasSentUpdate = true // Mark as updated
-                     }
-                 }
-            } else {
-                 print("Error: Could not get episode number or convert it to Int.")
+
+    private func sendPushUpdates(remainingTime: Double, totalTime: Double) {
+        guard let animeDetailsViewController = animeDetailsViewController, UserDefaults.standard.bool(forKey: "sendPushUpdates"), totalTime > 0, remainingTime / totalTime < 0.15, !animeDetailsViewController.hasSentUpdate
+        else {
+            return
+        }
+
+        let cleanedTitle = animeDetailsViewController.cleanTitle(animeDetailsViewController.animeTitle ?? "Unknown Anime")
+        animeDetailsViewController.fetchAnimeID(title: cleanedTitle) { [weak self] animeID in
+             guard animeID != 0 else {
+                 print("Could not fetch valid AniList ID for progress update.")
+                 return
+             }
+            let aniListMutation = AniListMutation()
+            // Use the episode number from the cell safely
+             let episodeNumber = Int(self?.cell.episodeNumber ?? "0") ?? 0 // Safely get number
+             guard episodeNumber != 0 else {
+                  print("Invalid episode number for AniList update.")
+                  return
+              }
+            aniListMutation.updateAnimeProgress(animeId: animeID, episodeNumber: episodeNumber) { result in
+                switch result {
+                case .success: print("Successfully updated anime progress.")
+                case .failure(let error): print("Failed to update anime progress: \(error.localizedDescription)")
+                }
             }
+            animeDetailsViewController.hasSentUpdate = true
         }
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        cleanup() // Call cleanup on deinit
+        cleanup() // Ensure cleanup happens on deinit
     }
 
     private func cleanup() {
         player?.pause()
         player = nil
 
+        // Remove player view controller if it exists
         if let vc = playerViewController {
             vc.willMove(toParent: nil)
             vc.view.removeFromSuperview()
@@ -580,40 +602,40 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
             playerViewController = nil
         }
 
-        if let token = timeObserverToken {
-            // Player might be nil already, so check before removing observer
-             // No easy way to check if player still exists here without storing it differently
-             // For safety, just nil out the token. The observer should deallocate with the player.
-            // player?.removeTimeObserver(token) // Potential crash if player is nil
+        if let timeObserverToken = timeObserverToken {
+            // Player might be nil already, check before removing
+            // player?.removeTimeObserver(timeObserverToken) // Avoid potential crash
             self.timeObserverToken = nil
         }
 
         webView?.stopLoading()
-        webView?.navigationDelegate = nil
+        webView?.navigationDelegate = nil // Break retain cycle
         webView?.removeFromSuperview()
-        webView = nil
+        webView = nil // Release webView
         retryCount = 0 // Reset retry count
         qualityOptions = [] // Clear options
+        isVideoPlaying = false // Reset flag
     }
 
-
     private func retryExtraction() {
-        retryCount += 1
-        if retryCount < maxRetries {
-            print("Retrying extraction (Attempt \(retryCount + 1))")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                guard let self = self else { return }
-                self.loadInitialURL() // Retry loading the initial URL
-            }
-        } else {
-            print("Max retries reached. Unable to find video source.")
-            DispatchQueue.main.async {
-                self.activityIndicator?.stopAnimating()
-                 self.showAlert(title: "Error", message: "Could not extract video source after multiple attempts.")
-                self.dismiss(animated: true)
+        if !isVideoPlaying { // Only retry if video isn't already playing
+            retryCount += 1
+            if retryCount < maxRetries {
+                print("Retrying extraction (Attempt \(retryCount + 1))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.loadInitialURL() // Retry loading the initial URL
+                }
+            } else {
+                print("Max retries reached. Unable to find video source.")
+                DispatchQueue.main.async {
+                    self.activityIndicator?.stopAnimating()
+                    self.showAlert(title: "Error", message: "Could not extract video source after multiple attempts.")
+                    self.dismiss(animated: true)
+                }
             }
         }
     }
+
 
     private func playNextEpisode() {
         guard let animeDetailsViewController = self.animeDetailsViewController else {
@@ -652,29 +674,30 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
         } else {
              // If cell is not visible, manually trigger the selection logic
              print("Cell for episode \(nextEpisode.number) not visible, triggering selection logic directly.")
-             animeDetailsViewController.showLoadingBanner() // Show loading indicator
+             animeDetailsViewController.showLoadingBanner()
              animeDetailsViewController.checkUserDefault(url: nextEpisode.href, cell: EpisodeCell(), fullURL: nextEpisode.href) // Pass dummy cell
          }
     }
 
     @objc func playerItemDidReachEnd(notification: Notification) {
-        if UserDefaults.standard.bool(forKey: "AutoPlay") {
-            guard let animeDetailsViewController = self.animeDetailsViewController else { return }
-            let hasNextEpisode = animeDetailsViewController.isReverseSorted ?
-                (animeDetailsViewController.currentEpisodeIndex > 0) :
-                (animeDetailsViewController.currentEpisodeIndex < animeDetailsViewController.episodes.count - 1)
+         // Common logic for ending playback
+         if UserDefaults.standard.bool(forKey: "AutoPlay"), let animeDetailsViewController = self.animeDetailsViewController {
+             let hasNextEpisode = animeDetailsViewController.isReverseSorted ?
+                 (animeDetailsViewController.currentEpisodeIndex > 0) :
+                 (animeDetailsViewController.currentEpisodeIndex < animeDetailsViewController.episodes.count - 1)
 
-            if hasNextEpisode {
-                self.dismiss(animated: true) { [weak self] in
-                    self?.playNextEpisode()
-                }
-            } else {
-                self.dismiss(animated: true, completion: nil)
-            }
-        } else {
-            self.dismiss(animated: true, completion: nil)
-        }
-    }
+             if hasNextEpisode {
+                 self.dismiss(animated: true) { [weak self] in
+                     self?.playNextEpisode()
+                 }
+             } else {
+                 self.dismiss(animated: true, completion: nil)
+             }
+         } else {
+             self.dismiss(animated: true, completion: nil)
+         }
+     }
+
 
     // Add showAlert helper
      private func showAlert(title: String, message: String) {
@@ -686,25 +709,29 @@ class ExternalVideoPlayer3rb: UIViewController, GCKRemoteMediaClientListener, WK
 
 extension ExternalVideoPlayer3rb: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Decide what to extract based on the current URL
-        if webView.url?.absoluteString == streamURL {
-            print("Initial URL finished loading. Extracting iframe source...")
-            extractIframeSource()
-        } else {
-             // We are likely on the iframe page now
-             print("Iframe content finished loading. Extracting video source...")
-             extractVideoSource()
+         // Only extract if we haven't already started playing
+         if !isVideoPlaying {
+             // Decide what to extract based on the current URL
+             if webView.url?.absoluteString == streamURL {
+                 print("Initial URL finished loading. Extracting iframe source...")
+                 extractIframeSource()
+             } else {
+                 // We are likely on the iframe page now
+                 print("Iframe content finished loading. Extracting video source...")
+                 extractVideoSource()
+             }
          }
-    }
+     }
+
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         print("WebView navigation failed: \(error.localizedDescription)")
-        retryExtraction()
+        if !isVideoPlaying { retryExtraction() } // Only retry if not already playing
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         print("WebView provisional navigation failed: \(error.localizedDescription)")
-        retryExtraction()
+        if !isVideoPlaying { retryExtraction() } // Only retry if not already playing
     }
 }
 
